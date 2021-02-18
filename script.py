@@ -31,7 +31,7 @@ def load_excels():
 
 def process_file(file_name: str):
     suffix = "DOPO" if "DOPO" in file_name else "RANO" if "RANO" in file_name else None
-    if suffix is None : raise Exception("invalid file name")
+    if suffix is None : raise Exception("invalid file name:  "+file_name)
 
     wb = xl.load_workbook(filename = file_name)
     info : recording_info = recording_info("", [])
@@ -52,7 +52,8 @@ def process_file(file_name: str):
 def load_recording(info:  recording_info):
     song = pydub.AudioSegment.from_wav(info.file_name)
     for [start, end] in  info.seqs:
-        seg = song[start:end]
+        #TODO  feature engineering
+        seg = song[start:end].set_sample_width(8).set_channels(1).set_frame_rate(10_000)
         play(seg)
 
 
