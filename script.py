@@ -30,14 +30,28 @@ from sklearn import metrics
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split 
 
-# from keras.models import Sequential
-# from keras.layers import Dense, Dropout, Activation
-# from keras.optimizers import Adam
-# from keras.utils import to_categorical
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Activation
+from keras.optimizers import Adam
+from keras.utils import to_categorical
+from keras.metrics import categorical_accuracy
+import keras
 
+
+from sklearn.model_selection import train_test_split 
+import tensorflow as tf
+
+#tf.python.client.device_lib.list_local_devices()
+
+#config = tf.ConfigProto( device_count = {'GPU': 1 , 'CPU': 8} ) 
+# sess = tf.Session(config=config) 
+# keras.backend.set_session(sess)
+
+EPOCHS = 50
+BATCH_SIZE =10
 MAX_ITER = 10
 SEGMENT_LEN = 2000
-
+NUM_LABELS = 2
 Segment = Tuple[float,float]
 Segments = List[Segment]
 
@@ -192,29 +206,25 @@ def store_data_pieces(data: Dict[str, Segments], destination_path: str):
 def load_data_pieces(dir:str)-> Tuple[List[object],List[bool]]:     # bool = target
     import pydub
     from pathlib import Path
+    from scipy.io import wavfile
 
     xs = []
     ys = []
     for p in Path(dir + "/data_pieces/positive").glob('*.wav'):
-        x = np.array(pydub.AudioSegment.from_wav(p).get_array_of_samples())
-        if len(x) != 88200:
-            print()
-        xs.append(x)
+        #x = pydub.AudioSegment.from_wav(p).get_array_of_samples()
+        sr,data = wavfile.read(p)
+        #c = pydub.AudioSegment.from_wav(p).channels
+        xs.append(data)
         ys.append(1)
 
     for p in Path(dir + "/data_pieces/negative").glob('*.wav'):
-        x = np.array(pydub.AudioSegment.from_wav(p).get_array_of_samples())
-        if len(x) != 88200:
-            print()
+        x = pydub.AudioSegment.from_wav(p).get_array_of_samples()
         xs.append(x)
         ys.append(0)
 
-    mx = max([len(arr) for arr in xs])
-    mn = min([len(arr) for arr in xs])
-    for arr in xs:
-        if len(arr) != 88200:
-            print()
-    return xs,ys
+            
+    ys =[np.eye(2)[y].astype('float32') for y in ys]
+    return np.array(xs),np.array(ys)
 
 
 # enlarge or shrink each segment to make its lenght the desired constant
@@ -273,7 +283,21 @@ def Single_file_negative_data(file: str,segs: Segments, n:int)-> Segments:
 
     return rec(file_len, n, [])
 
+def get_model(inp):
+    model = Sequential()
 
+    model.add(Dense(128,input_dim=int(inp),activation='relu'))
+    model.add(Dropout(0.25))
+
+    model.add(Dense(128,activation='relu'))
+    model.add(Dropout(0.25))
+
+
+    model.add(Dense(NUM_LABELS,activation='sigmoid'))
+    model.compile(loss="binary_crossentropy", metrics=['categorical_accuracy','binary_accuracy'], optimizer='adam') #categorical ce
+    model.summary()
+
+    return model
 
 if __name__ == "__main__":
     dir = choose_directory_dialog()
@@ -289,7 +313,22 @@ if __name__ == "__main__":
     #store_data_pieces(pos, dir + "/data_pieces/positive/")
 
     xs,ys = load_data_pieces(dir)
-    # xs = np.array([x.get_array_of_samples() for x in xs])
+    model = get_model(88200)
     
+   
+    model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1)
+    
+    
+
+
     InteractiveConsole(locals=globals()).interact()
 
+# NOTES
+# targets need to be one-hot encoded to work with accuracies in keras: otherwise use sparse accuracy
+# 
+# 
+# 
+# 
+# 
+# 
+# 
