@@ -25,22 +25,29 @@ import pandas as pd
 import librosa
 import matplotlib.pyplot as plt
 
-from scipy.io import wavfile as wav
+from os.path import dirname, join as pjoin
+from scipy.io import wavfile
+import scipy.io
+import scipy as sp
+import matplotlib.pylab as pylab
+import image
+
 from sklearn import metrics 
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split 
 
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Activation
-from keras.optimizers import Adam
-from keras.utils import to_categorical
-from keras.metrics import categorical_accuracy
+from keras.optimizers import Adam,SGD
+import keras.regularizers
 import keras
 
 
 from sklearn.model_selection import train_test_split 
 import tensorflow as tf
 
+from pathos.multiprocessing import ProcessingPool as Pool
+import noisereduce as nr
 #tf.python.client.device_lib.list_local_devices()
 
 #config = tf.ConfigProto( device_count = {'GPU': 1 , 'CPU': 8} ) 
@@ -48,14 +55,15 @@ import tensorflow as tf
 # keras.backend.set_session(sess)
 
 EPOCHS = 50
-BATCH_SIZE =10
+BATCH_SIZE = 30
 MAX_ITER = 10
 SEGMENT_LEN = 2000
 NUM_LABELS = 2
 Segment = Tuple[float,float]
 Segments = List[Segment]
-
-
+CLASSES = 2
+CORRECT = np.eye(CLASSES)[1].astype('float16') 
+INCORRECT = np.eye(CLASSES)[0].astype('float16')
 # @dataclass
 # class recording_info:
 #     rec_name:str
@@ -203,27 +211,33 @@ def store_data_pieces(data: Dict[str, Segments], destination_path: str):
             data_ord += 1
             # play(seg)
 
+def single_data_piece(y,p,noise,add_echo):  
+        sr,data = wavfile.read(p)
+        return data,y
+        data = sp.signal.spectrogram(data, 44100)[2].astype('float16').flatten()
+
+
 def load_data_pieces(dir:str)-> Tuple[List[object],List[bool]]:     # bool = target
     import pydub
     from pathlib import Path
     from scipy.io import wavfile
+    
 
-    xs = []
-    ys = []
-    for p in Path(dir + "/data_pieces/positive").glob('*.wav'):
-        #x = pydub.AudioSegment.from_wav(p).get_array_of_samples()
-        sr,data = wavfile.read(p)
-        #c = pydub.AudioSegment.from_wav(p).channels
-        xs.append(data)
-        ys.append(1)
 
-    for p in Path(dir + "/data_pieces/negative").glob('*.wav'):
-        x = pydub.AudioSegment.from_wav(p).get_array_of_samples()
-        xs.append(x)
-        ys.append(0)
+    
+    neg = [p for p in Path(dir + "/data_pieces/negative").glob('*.wav')]
 
-            
-    ys =[np.eye(2)[y].astype('float32') for y in ys]
+    
+        
+
+    
+    res_n = list(map(lambda a:single_data_piece(INCORRECT,a[1], lambda :(wavfile.read(neg[random.randrange(0,len(neg))])[1]),a[0]%2 == 0),enumerate(Path(dir + "/data_pieces/negative").glob('*.wav'))))
+    res_p = list(map(lambda a:single_data_piece(CORRECT,a[1],lambda :(wavfile.read(neg[random.randrange(0,len(neg))])[1]),a[0]%2 == 0),enumerate(Path(dir + "/data_pieces/positive").glob('*.wav'))))
+    all=res_n+res_p
+    random.shuffle(all)
+
+    xs = [np.abs(a[0]) for a in all]
+    ys = [a[1] for a in all]
     return np.array(xs),np.array(ys)
 
 
@@ -251,7 +265,7 @@ def as_dict(lst : List[Tuple[str, Segments]])-> Dict[str, Segments]:
     return { path:segs for path,segs in lst}
     
 
-def Make_negative_data(n: int,  info: Dict[str, Segments]):           #, files: List[str]
+def Make_negative_data(n: int,  info: Dict[str, Segments])-> Dict[str, Segments]:           #, files: List[str]
     files = list(info.keys())               # TODO: files without positive samples?
     per_file_samples =[n // len(files) for f in files]
     for _ in range(n % len(files)): 
@@ -283,23 +297,53 @@ def Single_file_negative_data(file: str,segs: Segments, n:int)-> Segments:
 
     return rec(file_len, n, [])
 
-def get_model(inp):
+def sequential_model(inp_dim,xs, ys):
     model = Sequential()
 
-    model.add(Dense(128,input_dim=int(inp),activation='relu'))
-    model.add(Dropout(0.25))
-
-    model.add(Dense(128,activation='relu'))
-    model.add(Dropout(0.25))
-
+    model.add(Dense(
+        512,
+        input_dim=int(inp_dim),
+        activation='relu'
+        ))
+    model.add(Dense(
+        256,
+        activation='relu'
+        ))
+    #model.add(Dropout(0.2))
+    model.add(Dense(
+        128,
+        activation='relu'#,
+        #kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5),
+        ))
+    # model.add(Dropout(0.2))
+    # model.add(Dense(
+    #     64,
+    #     activation='relu',
+    #     kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5),
+    #     ))
+    # model.add(Dense(
+    #     128,
+    #     activation='relu',
+    #     kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5),
+    #     ))
+    # # model.add(Dropout(0.2))
+    # model.add(Dense(
+    #     64,
+    #     activation='relu',
+    #     kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5),
+    #     ))#activity_regularizer=keras.regularizers.l2(1e-5)
+    #model.add(Dropout(0.2))
 
     model.add(Dense(NUM_LABELS,activation='sigmoid'))
-    model.compile(loss="binary_crossentropy", metrics=['categorical_accuracy','binary_accuracy'], optimizer='adam') #categorical ce
+
+    #opt = SGD(lr=1e-6, decay=1e-8, momentum=0.9, nesterov=True) 
+    model.compile(loss='binary_crossentropy', metrics=['binary_accuracy'], optimizer='adam') #'categorical_accuracy',#categorical ce
     model.summary()
 
-    return model
+    return model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1)
 
 if __name__ == "__main__":
+    print()
     dir = choose_directory_dialog()
 
     #pos = load_stored_info(dir)
@@ -313,15 +357,30 @@ if __name__ == "__main__":
     #store_data_pieces(pos, dir + "/data_pieces/positive/")
 
     xs,ys = load_data_pieces(dir)
-    model = get_model(88200)
-    
+    history = sequential_model(88200,xs, ys)#50697#138897#176400
    
-    model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1)
-    
     
 
 
-    InteractiveConsole(locals=globals()).interact()
+
+    from matplotlib import pyplot as plt
+    plt.plot(history.history['binary_accuracy'])
+    plt.plot(history.history['val_binary_accuracy'])
+    plt.title('model accuracy')
+    plt.ylabel('accuracy')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'val'], loc='upper right')
+    plt.show()
+
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title('model loss')
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'val'], loc='upper left')
+    plt.show()
+
+    #InteractiveConsole(locals=globals()).interact()
 
 # NOTES
 # targets need to be one-hot encoded to work with accuracies in keras: otherwise use sparse accuracy
