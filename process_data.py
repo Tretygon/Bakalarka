@@ -1,3 +1,4 @@
+from Machine_learning import CORRECT, INCORRECT
 import copy
 import functools
 from logging import error
@@ -34,7 +35,7 @@ import matplotlib.pylab as pylab
 import image
 import joblib
 import dask.distributed
-
+from pathlib import Path
 
 import sklearn
 from sklearn import metrics 
@@ -64,6 +65,9 @@ SEGMENT_LEN = 3000  #in miliseconds
 Segment = Tuple[float,float]
 Segments = List[Segment]
 TEST_SIZE=0.1
+
+CORRECT = np.eye(2)[1].astype('float16') 
+INCORRECT = np.eye(2)[0].astype('float16')
 # @dataclass
 # class recording_info:
 #     rec_name:str
@@ -92,8 +96,8 @@ def parse_excel(path:str)-> Dict[str,Segments]:
     for name,segs in infos.items(): 
         path = next(filter(lambda a: name in a, audios))                # next(...) == [0]
         check_existence(path)
-        song = pydub.AudioSegment.from_wav(path)
-        new_segments = [align_to_set_len(SEGMENT_LEN, len(song), start, end) for start,end in segs] #length normalization
+        len_song = len(pydub.AudioSegment.from_wav(path))
+        new_segments = [align_to_set_len(SEGMENT_LEN, len_song, start, end) for start,end in segs] #length normalization
         data_info[path] = new_segments
 
     return data_info
@@ -191,12 +195,12 @@ def load_stored_info(dir:str)-> Dict[str,Segments]:
 # enlarge or shrink each segment to make its lenght the desired constant  
 def align_to_set_len(const, song_len, start, end):
     adjust = (const  - end + start)
-    distribution  = random.randint(0,1)      
-    start = start - distribution*adjust
-    end = end + (1-distribution)*adjust
-
-    dif = end - start
-    end = end + dif     #try to prevent rounding errors
+    distribution  = random.random()      
+    start = int(start - distribution*adjust)
+    end = int(end + (1-distribution)*adjust)
+    
+    dif = const - (end - start)
+    end = end + dif     #prevent rounding errors
 
     if end >= song_len:
         start = song_len - const
@@ -208,7 +212,8 @@ def align_to_set_len(const, song_len, start, end):
 
     return start,end
 
-def store_data_pieces(data: Dict[str, Segments], destination_path: str,data_ord:int):
+def store_data_pieces(data: Dict[str, Segments], destination_path: str,xs_dest_path: str,ys_dest_path: str,y):
+    ret_xs,ret_ys = [],[]
     import pydub
     for path,segments in data.items(): 
         song = pydub.AudioSegment.from_wav(path)
@@ -217,14 +222,17 @@ def store_data_pieces(data: Dict[str, Segments], destination_path: str,data_ord:
             raw = np.array(seg.get_array_of_samples())
             sr = song.frame_rate
             mel = To_Mel(raw,sr)
+            ret_xs.append(mel)
+            ret_ys.append(y)
+            # pathlib.Path(destination_path).mkdir(parents=True, exist_ok=True)
+            # np.save(destination_path + data_ord.__str__(),mel)
+            # data_ord += 1
+    np.save(xs_dest_path,np.array(ret_xs))
+    np.save(ys_dest_path,np.array(ret_ys))
 
-            pathlib.Path(destination_path).mkdir(parents=True, exist_ok=True)
-            np.save(destination_path + data_ord.__str__(),mel)
-            data_ord += 1
-
-
-def augment_and_store(data: Tuple[Dict[str, Segment],Dict[str, Segment]],destination_path: str,data_ord:int):
+def augment_and_store(data: Tuple[Dict[str, Segment],Dict[str, Segment]],xs_dest_path: str,ys_dest_path: str,y):
     data1,data2 = data
+    ret_xs,ret_ys = [],[]
     import pydub
     items2_i = 0
     segments2_i = 0
@@ -246,17 +254,22 @@ def augment_and_store(data: Tuple[Dict[str, Segment],Dict[str, Segment]],destina
             sr = song1.frame_rate
             mel = To_Mel(np.add(raw1,raw2),sr)
 
-            pathlib.Path(destination_path).mkdir(parents=True, exist_ok=True)
-            np.save(destination_path + data_ord.__str__(),mel)
+            ret_xs.append(mel)
+            ret_ys.append(y)
+            # pathlib.Path(destination_path).mkdir(parents=True, exist_ok=True)
+            # np.save(destination_path + data_ord.__str__(),mel)
 
             data_ord += 1
             segments2_i += 1
             if segments2_i == len(segments2):
                 segments2_i = 0
                 items2_i += 1
+                if items2_i == len(items2): return
                 (path2,segments2) = items2[items2_i]
                 random.shuffle(segments2)
                 song2 = pydub.AudioSegment.from_wav(path2)
+    np.save(xs_dest_path,np.array(ret_xs))
+    np.save(ys_dest_path,np.array(ret_ys))
 
 def as_dict(lst : List[Tuple[str, Segments]])-> Dict[str, Segments]:
     return { path:segs for path,segs in lst}
@@ -279,7 +292,7 @@ def To_Mel(data,sr):
     
     S = librosa.feature.melspectrogram(data.astype('float16'), sr=sr, n_fft=1028, hop_length=256, n_mels=128)
     
-    log_mfcc = librosa.feature.mfcc(S=np.log(S+1e-6), sr=sr, n_mfcc=32)
+    log_mfcc = librosa.feature.mfcc(S=np.log(S+1e-6), sr=sr, n_mfcc=48)
     
     return log_mfcc.astype('float16')
 
@@ -300,14 +313,38 @@ def Single_file_choose_negative_data(file: str,segs: Segments, n:int)-> Segments
             ret.append((start,end))
             n -= 1
 
+def concat_small_files():
+    all_pos = list(map(np.load,Path(dir + "/data_pieces/augmentation/positive").glob('*.npy')))
+    all_neg = list(map(np.load,Path(dir + "/data_pieces/augmentation/negative").glob('*.npy')))
+    all_data = np.array(all_pos+all_neg)
+    targets = np.append(np.tile(CORRECT,[len(all_pos),1]),np.tile(INCORRECT,[len(all_neg),1]),axis=0)
+    
+    indices = np.arange(all_data.shape[0])
+    np.random.shuffle(indices)
+    all_data = all_data[indices]
+    targets = targets[indices]
+    
+    np.save(dir +"/data_pieces/augmentation/all_data",all_data)
+    np.save(dir +"/data_pieces/augmentation/all_targets",targets)
+
+
+    all_pos = list(map(np.load,Path(dir + "/data_pieces/test/positive").glob('*.npy')))
+    all_neg = list(map(np.load,Path(dir + "/data_pieces/test/negative").glob('*.npy')))
+    all_data = np.array(all_pos+all_neg)
+    targets = np.append(np.tile(CORRECT,[len(all_pos),1]),np.tile(INCORRECT,[len(all_neg),1]),axis=0)
+
+    
+    np.save(dir +"/data_pieces/all_tests",all_data)
+    np.save(dir +"/data_pieces/all_test_targets",targets)
+    
 if __name__ == "__main__":
     print()
     dir = choose_directory_dialog()
-
+    # concat_small_files()
     positive = load_stored_info(dir)
+    positive = parse_excel(dir)
     all_positive = positive
     save_info(positive)
-    #positive = parse_excel(dir)
     flatten=lambda dict: [(file,s) for file,segs in dict.items() for s in segs]
     as_dict = lambda x: add_or_append_multiple({},x)
 
@@ -334,15 +371,16 @@ if __name__ == "__main__":
 
     from pathos.multiprocessing import ProcessPool
     work = [
-        [augment_and_store,(negative[0],negative[1]), dir + "/data_pieces/negative/",num_of_train_data],
-        [augment_and_store,(positive,negative[2]), dir + "/data_pieces/positive/",num_of_train_data],
+        [augment_and_store,(positive,negative[2]), dir + "/data_pieces/augmented/positive/aug", dir + "/data_pieces/augmented/positive/aug_t",CORRECT],
+        [augment_and_store,(negative[0],negative[1]), dir + "/data_pieces/augmented/negative/aug", dir + "/data_pieces/augmented/negative/aug_t",INCORRECT],
 
-        [store_data_pieces,positive, dir+"/data_pieces/positive/",0],
-        [store_data_pieces,negative[3], dir+"/data_pieces/negative/",0],
+        [store_data_pieces,positive, dir + "/data_pieces/augmented/positive/norm", dir + "/data_pieces/augmented/positive/norm_t",CORRECT],
+        [store_data_pieces,negative[3], dir + "/data_pieces/augmented/negative/norm", dir + "/data_pieces/augmented/negative/norm_t",INCORRECT],
 
-        [store_data_pieces,positive_test, dir+"/data_pieces/test/positive/",0],
-        [store_data_pieces,negative_test, dir+"/data_pieces/test/negative/",0],
+        [store_data_pieces,positive_test, dir + "/data_pieces/test/positive/pos", dir + "/data_pieces/augmented/positive/pos_t",CORRECT]
+        [store_data_pieces,negative_test, dir + "/data_pieces/test/negative/neg", dir + "/data_pieces/augmented/negative/neg_t",INCORRECT]
     ]
-    ProcessPool(nodes=4).map(lambda args:args[0](args[1],args[2],args[3]),work)
-    
+    # ProcessPool(nodes=4).map(lambda args:args[0](args[1],args[2],args[3]),work)
+
+
 
