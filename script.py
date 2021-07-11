@@ -1,9 +1,9 @@
 import copy
 import functools
+from logging import error
 from mmap import ACCESS_COPY
 from tkinter.constants import E
 import numpy as np
-import sklearn
 import typing
 from typing import List,Tuple,Dict
 import random
@@ -23,6 +23,7 @@ import IPython.display as ipd
 import numpy as np
 import pandas as pd
 import librosa
+import librosa.display
 import matplotlib.pyplot as plt
 
 from os.path import dirname, join as pjoin
@@ -31,22 +32,27 @@ import scipy.io
 import scipy as sp
 import matplotlib.pylab as pylab
 import image
+import joblib
+import dask.distributed
 
+
+import sklearn
 from sklearn import metrics 
 from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split 
+import sklearn.multiclass
+from sklearn.model_selection import train_test_split,RandomizedSearchCV
 
 from keras.models import Sequential
-from keras.layers import Dense, Dropout, Activation
+from keras.layers import Dense, Dropout, Activation, Flatten, Conv2D, MaxPooling2D,Conv1D,MaxPooling1D
 from keras.optimizers import Adam,SGD
-import keras.regularizers
+from keras.layers.normalization import BatchNormalization
+from keras.layers.advanced_activations import LeakyReLU
 import keras
-
-
-from sklearn.model_selection import train_test_split 
 import tensorflow as tf
+from tensorflow.keras import regularizers
 
-from pathos.multiprocessing import ProcessingPool as Pool
+
+
 import noisereduce as nr
 #tf.python.client.device_lib.list_local_devices()
 
@@ -110,7 +116,7 @@ def load_data_recursively(root:str) -> Tuple[Dict[str, Segments],List[str]] :
     for p in Path(root).glob('*.xlsx'):
         s = p.absolute().__str__()
         if ".~" in s or "~$" in s: continue              #temporary excel file thingy
-        rec_info = process_file(s)
+        rec_info = process_excel(s)
         break
 
     all_audio_files : List[str] = []
@@ -121,7 +127,7 @@ def load_data_recursively(root:str) -> Tuple[Dict[str, Segments],List[str]] :
     return rec_info, all_audio_files
 
 
-def process_file(file_path: str)->Dict[str, Segments]:
+def process_excel(file_path: str)->Dict[str, Segments]:
 
     ws = xl.load_workbook(filename = file_path).active
     rec_infos : Dict[str, Segments] = {}
@@ -153,22 +159,13 @@ def load_recording(audio_file_path: str, segments:  Segments):
         play(seg)
 
 def check_existence(s: str):
-    
     if not os.path.exists(s): 
         b = os.path.exists(s)
+        print(f"file not found: {b}")
+        error(f"file not found: {b}")
     else: return
 
-# train_data, test_data, train_target, test_target = sklearn.model_selection.train_test_split(
-#         dataset.data, dataset.target, test_size=args.test_size, random_state=args.seed)
 
-def train_logistic(data,t):
-    pipe = sklearn.pipeline.Pipeline(
-        [("scaling", sklearn.preprocessing.StandardScaler())] +
-        [("classifier", sklearn.linear_model.LogisticRegression(solver="saga", max_iter=MAX_ITER))]
-    )
-    pipe.fit(data, t)
-    return pipe
- 
 
 
 
@@ -187,65 +184,25 @@ def load_stored_info(dir:str)-> Dict[str,Segments]:
     import pickle
     return pickle.load(open( dir + "/data_info.p", "rb" ) )
 
-
-
-def store_data_pieces(data: Dict[str, Segments], destination_path: str):
-    data_ord = 1
+#makes the length of all segments the same
+def normalize_data_length(data: Dict[str, Segments])-> Dict[str, Segments]:
     import pydub
-    for path,segments in data.items(): 
-        song = pydub.AudioSegment.from_wav(path)
-        song_len = len(song)
-        for [start, end] in  segments:
-            start,end = align_to_set_len(SEGMENT_LEN, song_len, start, end)
-            seg = song[start:end].set_sample_width(2).set_channels(1) 
-
-            raw = np.array(seg.get_array_of_samples())#.astype(np.float32)
-            if len(raw) != 88200:
-                print()
-            mn = seg.frame_width
-
-
-
-            pathlib.Path(destination_path).mkdir(parents=True, exist_ok=True)
-            seg.export(destination_path + data_ord.__str__() + ".wav", format="wav")
-            data_ord += 1
-            # play(seg)
-
-def single_data_piece(y,p,noise,add_echo):  
-        sr,data = wavfile.read(p)
-        return data,y
-        data = sp.signal.spectrogram(data, 44100)[2].astype('float16').flatten()
-
-
-def load_data_pieces(dir:str)-> Tuple[List[object],List[bool]]:     # bool = target
-    import pydub
-    from pathlib import Path
-    from scipy.io import wavfile
+    new_data = {}
+    for f,segments in data.items(): 
+        song = pydub.AudioSegment.from_wav(f)
+        new_segments = [align_to_set_len(SEGMENT_LEN, len(song), start, end) for start,end in segments]
+        new_data[f] = new_segments
+    return new_data
     
-
-
-    
-    neg = [p for p in Path(dir + "/data_pieces/negative").glob('*.wav')]
-
-    
-        
-
-    
-    res_n = list(map(lambda a:single_data_piece(INCORRECT,a[1], lambda :(wavfile.read(neg[random.randrange(0,len(neg))])[1]),a[0]%2 == 0),enumerate(Path(dir + "/data_pieces/negative").glob('*.wav'))))
-    res_p = list(map(lambda a:single_data_piece(CORRECT,a[1],lambda :(wavfile.read(neg[random.randrange(0,len(neg))])[1]),a[0]%2 == 0),enumerate(Path(dir + "/data_pieces/positive").glob('*.wav'))))
-    all=res_n+res_p
-    random.shuffle(all)
-
-    xs = [np.abs(a[0]) for a in all]
-    ys = [a[1] for a in all]
-    return np.array(xs),np.array(ys)
-
-
-# enlarge or shrink each segment to make its lenght the desired constant
+# enlarge or shrink each segment to make its lenght the desired constant  
 def align_to_set_len(const, song_len, start, end):
-    adjust = (const  - end + start)/4      
-    start = start - 3 * adjust
-    end = end + adjust
+    adjust = (const  - end + start)
+    distribution  = random.randint(0,1)      
+    start = start - distribution*adjust
+    end = end + (1-distribution)*adjust
+
+    dif = end - start
+    end = end + dif     #try to prevent rounding errors
 
     if end >= song_len:
         start = song_len - const
@@ -255,10 +212,54 @@ def align_to_set_len(const, song_len, start, end):
         start = 0
         end = const
 
-    dif = end - start
-    if end - start != const:
-        print()
     return start,end
+
+def store_data_pieces(data: Dict[str, Segments], destination_path: str):
+    data_ord = 1
+    import pydub
+    for path,segments in data.items(): 
+        song = pydub.AudioSegment.from_wav(path)
+        for [start, end] in  segments:
+            start,end = align_to_set_len(SEGMENT_LEN, len(song), start, end)
+            seg = song[start:end]
+
+            raw = np.array(seg.get_array_of_samples().astype(np.float16))#
+            
+            mn = seg.frame_width
+
+
+
+            pathlib.Path(destination_path).mkdir(parents=True, exist_ok=True)
+            seg.export(destination_path + data_ord.__str__() + ".wav", format="wav")
+            data_ord += 1
+            # play(seg)
+
+
+def load_data_pieces(dir:str)-> Tuple[List[object],List[bool]]:     # bool = target
+    import pydub
+    from pathlib import Path
+    from scipy.io import wavfile
+    from pathos.multiprocessing import ProcessingPool as Pool
+
+
+    
+    neg = [p for p in Path(dir + "/data_pieces/negative").glob('*.wav')]
+
+    pool = Pool(10)
+        
+ #lambda :(wavfile.read(neg[random.randrange(0,len(neg))])[1]),a[0]%2 == 0)
+
+    res_n = list(pool.map(lambda p:(single_data_piece(p),INCORRECT),list(Path(dir + "/data_pieces/negative").glob('*.wav'))))
+    res_p = list(pool.map(lambda p:(single_data_piece(p),CORRECT),list(Path(dir + "/data_pieces/positive").glob('*.wav'))))
+    pool.close()
+    all=res_n+res_p
+    random.shuffle(all)
+
+    xs = [a[0].reshape((a[0].shape[0],a[0].shape[1],1)) for a in all]#
+    ys = [a[1] for a in all]
+    return np.array(xs),np.array(ys)
+
+
 
 
 def as_dict(lst : List[Tuple[str, Segments]])-> Dict[str, Segments]:
@@ -267,18 +268,21 @@ def as_dict(lst : List[Tuple[str, Segments]])-> Dict[str, Segments]:
 
 def Make_negative_data(n: int,  info: Dict[str, Segments])-> Dict[str, Segments]:           #, files: List[str]
     files = list(info.keys())               # TODO: files without positive samples?
+
+    # spread evenly across files
     per_file_samples =[n // len(files) for f in files]
     for _ in range(n % len(files)): 
         i = random.randrange(0, len(files))
         per_file_samples[i] = per_file_samples[i] + 1
-    data = {f:Single_file_negative_data(f,info[f],samples) for f,samples in zip(files,per_file_samples)}
+
+    data = {f:Single_file_choose_negative_data(f,info[f],samples) for f,samples in zip(files,per_file_samples)}
     return data 
 
           
     
 
 
-def Single_file_negative_data(file: str,segs: Segments, n:int)-> Segments:
+def Single_file_choose_negative_data(file: str,segs: Segments, n:int)-> Segments:
     file_len = len(pydub.AudioSegment.from_wav(file))
 
     def rec(rec_length: int, n: int, acc: List[Segment])-> List[Segment]:
@@ -297,50 +301,141 @@ def Single_file_negative_data(file: str,segs: Segments, n:int)-> Segments:
 
     return rec(file_len, n, [])
 
-def sequential_model(inp_dim,xs, ys):
-    model = Sequential()
+# def MLP(xs, ys):
+#     model = Sequential()
 
-    model.add(Dense(
-        512,
-        input_dim=int(inp_dim),
-        activation='relu'
-        ))
-    model.add(Dense(
-        256,
-        activation='relu'
-        ))
-    #model.add(Dropout(0.2))
-    model.add(Dense(
-        128,
-        activation='relu'#,
-        #kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5),
-        ))
-    # model.add(Dropout(0.2))
-    # model.add(Dense(
-    #     64,
-    #     activation='relu',
-    #     kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5),
-    #     ))
-    # model.add(Dense(
-    #     128,
-    #     activation='relu',
-    #     kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5),
-    #     ))
-    # # model.add(Dropout(0.2))
-    # model.add(Dense(
-    #     64,
-    #     activation='relu',
-    #     kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5),
-    #     ))#activity_regularizer=keras.regularizers.l2(1e-5)
-    #model.add(Dropout(0.2))
+#     model.add(Dense(
+#         128,
+#         input_dim=int(xs.shape[1]),
+#         activation='relu'
+#         ))
+#     model.add(Dense(
+#         64,
+#         activation='relu'
+#         ))
+#     #model.add(Dropout(0.2))
+#     model.add(Dense(NUM_LABELS,activation='sigmoid'))
 
-    model.add(Dense(NUM_LABELS,activation='sigmoid'))
+#     model.compile(loss='binary_crossentropy', metrics=['binary_accuracy'], optimizer='adam') 
+    
+#     # model.summary()
 
-    #opt = SGD(lr=1e-6, decay=1e-8, momentum=0.9, nesterov=True) 
-    model.compile(loss='binary_crossentropy', metrics=['binary_accuracy'], optimizer='adam') #'categorical_accuracy',#categorical ce
+#     def label_loss(y_true,y_pred):
+#          return tf.keras.losses.binary_crossentropy(y_true, y_pred) * y_true
+
+#     return model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,use_multiprocessing=True)
+
+def To_Mel(file):  
+        sr,data = wavfile.read(file)
+        
+        S = librosa.feature.melspectrogram(data.astype('float16'), sr=sr, n_fft=1028, hop_length=256, n_mels=128)
+        
+        log_mfcc = librosa.feature.mfcc(S=np.log(S+1e-6), sr=sr, n_mfcc=32)
+        
+        return log_mfcc.astype('float16')
+
+def Logistic(xs,ys):
+    # def train_logistic(data,t):
+    # pipe = sklearn.pipeline.Pipeline(
+    #     [("scaling", sklearn.preprocessing.StandardScaler())] +
+    #     [("classifier", sklearn.linear_model.LogisticRegression(solver="saga", max_iter=MAX_ITER))]
+    # )
+    # pipe.fit(data, t)
+    # return pipe
+ 
+
+    X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(xs,ys,test_size=0.2)
+    model = sklearn.linear_model.LogisticRegressionCV(verbose=1,max_iter=200)
+    from joblib import parallel_backend
+    with parallel_backend('dask', n_jobs=10):
+        model.fit(X_train,y_train)
+    predicted = model.predict(X_test)
+    print()
+    print(f"accuracy: {sklearn.metrics.accuracy_score(y_test,predicted)}")
+
+def SVM(xs,ys):
+    X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(xs,ys,test_size=0.2)
+    n_estimators = 10
+    # model = sklearn.svm.LinearSVC(verbose=1)
+    model = sklearn.multiclass.OneVsRestClassifier(sklearn.ensemble.BaggingClassifier(sklearn.svm.LinearSVC(verbose=1), max_samples=1.0 / n_estimators, n_estimators=n_estimators))
+    # model = sklearn.multiclass.OneVsRestClassifier(sklearn.ensemble.BaggingClassifier(sklearn.svm.SVC(kernel='rbf', probability=True, class_weight='auto'), max_samples=1.0 / n_estimators, n_estimators=n_estimators))
+
+    from joblib import parallel_backend
+    with parallel_backend('dask', n_jobs=10):
+        model.fit(X_train,y_train)
+    predicted = model.predict(X_test)
+    print(sklearn.metrics.accuracy_score(y_test,predicted))
+
+def Gradient_forest(xs,ys):
+    import sklearn.ensemble
+    X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(xs,ys,test_size=0.2)
+    
+    #model = sklearn.ensemble.GradientBoostingClassifier(verbose=1)
+    model = sklearn.ensemble.RandomForestClassifier(n_estimators=1000,verbose=1)
+    from joblib import parallel_backend
+    with parallel_backend('dask', n_jobs=10):
+        model.fit(X_train,y_train)
+    predicted = model.predict(X_test)
+    print(sklearn.metrics.accuracy_score(y_test,predicted))
+
+
+# def CNN1D(xs, ys):
+#     reg = None  #regularizers.l2(l=1e-4)
+#     act = LeakyReLU(alpha=0.1)
+#     model = Sequential([
+#         Conv1D(64,32,activation=act, kernel_regularizer=reg),
+#         MaxPooling1D(4),
+#         Conv1D(32,9,strides=1,activation=act, kernel_regularizer=reg),
+#         MaxPooling1D(4),
+#         Conv1D(32,3,activation=act, kernel_regularizer=reg),
+#         MaxPooling1D(2),
+#         Flatten(),
+#         Dense(16, activation=act, kernel_regularizer=reg),
+#         Dense(NUM_LABELS,activation='sigmoid')
+#     ])
+
+#     model.compile(loss='binary_crossentropy', metrics=['binary_accuracy'], optimizer='adam')#,tf.keras.metrics.AUC()
+#     in_shape = (None,xs.shape[1],xs.shape[2])
+#     model.build(input_shape=in_shape)
+#     model.summary()
+
+#     history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,use_multiprocessing=True)
+#     #eeee = [l.get_weights() for l in model.layers[0]]
+
+#     return history
+def CNN2D(xs, ys):
+    
+
+
+    reg = regularizers.l2(l=1e-4)
+    act = LeakyReLU(alpha=0.1)
+    model = Sequential([
+        Conv2D(96,(5,1),activation=act, kernel_regularizer=reg,padding='same'),
+        Conv2D(96,(1,5),activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling2D((4,2)),
+        Conv2D(96,(3,1),strides=1,activation=act, kernel_regularizer=reg,padding='same'),
+        Conv2D(96,(1,3),strides=1,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling2D((2,2)),
+        Conv2D(96,(3,1),strides=1,activation=act, kernel_regularizer=reg,padding='same'),
+        Conv2D(96,(1,3),strides=1,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling2D((2,2)),
+        Conv2D(96,(3,1),strides=1,activation=act, kernel_regularizer=reg,padding='same'),
+        Conv2D(96,(1,3),strides=1,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling2D((2,2)),
+        Flatten(),
+        Dense(16, activation=act, kernel_regularizer=reg),
+        Dense(NUM_LABELS,activation='sigmoid')
+    ])
+
+    model.compile(loss='binary_crossentropy', metrics=['binary_accuracy',tf.keras.metrics.AUC()], optimizer='adam')#
+    in_shape = (None,xs.shape[1],xs.shape[2],1)
+    model.build(input_shape=in_shape)
     model.summary()
 
-    return model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1)
+    history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,use_multiprocessing=True)
+    #eeee = [l.get_weights() for l in model.layers[0]]
+
+    return history
 
 if __name__ == "__main__":
     print()
@@ -357,30 +452,41 @@ if __name__ == "__main__":
     #store_data_pieces(pos, dir + "/data_pieces/positive/")
 
     xs,ys = load_data_pieces(dir)
-    history = sequential_model(88200,xs, ys)#50697#138897#176400
-   
+    samples, a, b,c = xs.shape
+    x1 = xs.reshape((samples,a*b*c))
+    y1 = np.array(list(map(lambda y: np.argmax(y)+1,ys))).astype('float16')
+    print('got data')
+    c = dask.distributed.Client(processes=False)
+    Gradient_forest(x1,y1)
+    SVM(x1,y1)    
+    InteractiveConsole(locals=globals()).interact()
+    # Logistic(x1,y1)
     
+    history = CNN2D(xs, ys)
+   
 
 
 
     from matplotlib import pyplot as plt
+    plt.figure()
     plt.plot(history.history['binary_accuracy'])
     plt.plot(history.history['val_binary_accuracy'])
     plt.title('model accuracy')
     plt.ylabel('accuracy')
     plt.xlabel('epoch')
     plt.legend(['train', 'val'], loc='upper right')
-    plt.show()
+    plt.show(block=False)
 
+
+    plt.figure()
     plt.plot(history.history['loss'])
     plt.plot(history.history['val_loss'])
     plt.title('model loss')
     plt.ylabel('loss')
     plt.xlabel('epoch')
     plt.legend(['train', 'val'], loc='upper left')
-    plt.show()
+    plt.show(block=False)
 
-    #InteractiveConsole(locals=globals()).interact()
 
 # NOTES
 # targets need to be one-hot encoded to work with accuracies in keras: otherwise use sparse accuracy
