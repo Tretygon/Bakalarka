@@ -3,7 +3,9 @@ import functools
 from logging import error
 from mmap import ACCESS_COPY
 from tkinter.constants import E
-from keras.backend import dropout
+from keras.backend import conv1d, dropout, elu
+from keras.layers.convolutional import Conv1D
+from matplotlib.colors import cnames
 import numpy as np
 import typing
 from typing import List,Tuple,Dict
@@ -44,16 +46,19 @@ from sklearn.metrics import accuracy_score,roc_auc_score
 from sklearn.preprocessing import LabelEncoder
 import sklearn.multiclass
 from sklearn.model_selection import train_test_split,RandomizedSearchCV
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.mixture import BayesianGaussianMixture
+
 
 from keras.models import Sequential
-from keras.layers import Dense, Dropout, Activation, Flatten, Conv2D, MaxPooling2D,Conv1D,MaxPooling1D
+from keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPooling2D,LSTM,GRU,SimpleRNN,MaxPooling1D,Bidirectional
 from keras.optimizers import Adam,SGD
 from keras.layers.normalization import BatchNormalization
-from keras.layers.advanced_activations import LeakyReLU
+from keras.layers.advanced_activations import LeakyReLU,PReLU,ELU
 import keras
 import tensorflow as tf
 from tensorflow.keras import regularizers
-
 
 
 import noisereduce as nr
@@ -63,8 +68,8 @@ import noisereduce as nr
 # sess = tf.Session(config=config) 
 # keras.backend.set_session(sess)
 
-EPOCHS = 15
-BATCH_SIZE = 30
+EPOCHS = 20
+BATCH_SIZE = 50
 MAX_ITER = 15
 NUM_LABELS = 2
 Segment = Tuple[float,float]
@@ -78,14 +83,6 @@ INCORRECT = np.eye(CLASSES)[0].astype('float16')
 #     seqs: List[Tuple[float,float]]
 
 
-# TODO: 
-# bootstrapping negative data instead of uniform selection?
-# randomise adjusting to set length
-# data augumentation
-#
-#
-#
-#
 
 
 def choose_directory_dialog()-> str : 
@@ -99,11 +96,16 @@ def choose_directory_dialog()-> str :
 def load_data(dir):
     xs = np.load(dir + "/data_pieces/augmentation/all_data.npy")
     ys = np.load(dir + "/data_pieces/augmentation/all_targets.npy")
-
-
     return xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2],1]), ys
+    # return xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2],1]), ys
 
-def load_data_pieces(dir:str)-> Tuple[List[object],List[bool]]:     # bool = target
+def load_tests(dir):
+    xs = np.load(dir + "/data_pieces/all_tests.npy")
+    ys = np.load(dir + "/data_pieces/all_test_targets.npy")
+    return xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2],1]), ys
+    # return xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2],1]), ys
+
+def load_audios(dir:str)-> Tuple[List[object],List[bool]]:     # bool = target
     from pathlib import Path
     Path(dir + "/data_pieces/negative").glob('*.npy')
     neg = list(map(lambda p: (np.load(p),CORRECT),Path(dir + "/data_pieces/augmentation/positive").glob('*.npy')))
@@ -116,10 +118,10 @@ def load_data_pieces(dir:str)-> Tuple[List[object],List[bool]]:     # bool = tar
     ys = [a[1] for a in all]
     return np.array(xs),np.array(ys)
 
-def load_test_data_pieces(dir:str)-> Tuple[List[object],List[bool]]:     # bool = target
+def load_test_audios(dir:str)-> Tuple[List[object],List[bool]]:     # bool = target
     from pathlib import Path
-    Path(dir + "/data_pieces/negative").glob('*.npy')
-    neg = list(map(lambda p: (np.load(p),CORRECT),Path(dir + "/data_pieces/test/positive").glob('*.npy')))
+    Path(dir + "/data_pieces/negative").glob('*.wav')
+    neg = list(map(lambda p: (np.load(p),CORRECT),Path(dir + "/data_pieces/test/positive").glob('*.wav')))
     pos = list(map(lambda p: (np.load(p),INCORRECT),Path(dir + "/data_pieces/test/negative").glob('*.npy')))
     all=pos+neg
     xs = [a[0].reshape((a[0].shape[0],a[0].shape[1],1)) for a in all]
@@ -128,121 +130,95 @@ def load_test_data_pieces(dir:str)-> Tuple[List[object],List[bool]]:     # bool 
 
 
 
-# def MLP(xs, ys):
-#     model = Sequential()
+def MLP(xs, ys,xs_test,ys_test):
+    model = Sequential()
 
-#     model.add(Dense(
-#         128,
-#         input_dim=int(xs.shape[1]),
-#         activation='relu'
-#         ))
-#     model.add(Dense(
-#         64,
-#         activation='relu'
-#         ))
-#     #model.add(Dropout(0.2))
-#     model.add(Dense(NUM_LABELS,activation='sigmoid'))
+    reg = regularizers.l2(l=1e-4)
+    model.add(Dense(
+        1024,
+        input_dim=int(xs.shape[1]),
+        activation=LeakyReLU(alpha=0.1),
+        kernel_regularizer=reg
+        ))
+    model.add(Dense(
+        256,
+        activation=LeakyReLU(alpha=0.1),
+        kernel_regularizer=reg
+        ))
+    model.add(Dense(
+        256,
+        activation=LeakyReLU(alpha=0.1),
+        kernel_regularizer=reg
+        ))
+    model.add(Dense(
+        256,
+        activation=LeakyReLU(alpha=0.1),
+        kernel_regularizer=reg
+        ))
+    model.add(Dense(
+        256,
+        activation=LeakyReLU(alpha=0.1),
+        kernel_regularizer=reg
+        ))
+    model.add(Dense(
+        256,
+        activation=LeakyReLU(alpha=0.1),
+        kernel_regularizer=reg
+        ))
+    model.add(Dense(
+        128,
+        activation=LeakyReLU(alpha=0.1),
+        kernel_regularizer=reg
+        ))
+    # model.add(Dropout(0.2))
+    model.add(Dense(NUM_LABELS,activation='sigmoid'))
 
-#     model.compile(loss='binary_crossentropy', metrics=['binary_accuracy'], optimizer='adam') 
+    model.compile(loss='binary_crossentropy', metrics=['binary_accuracy',tf.keras.metrics.AUC()], optimizer='adam') 
     
-#     # model.summary()
+    model.summary()
+    
+    history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,use_multiprocessing=True)
+    model.evaluate(xs_test,ys_test)
+    return
 
-#     def label_loss(y_true,y_pred):
-#          return tf.keras.losses.binary_crossentropy(y_true, y_pred) * y_true
+def Sklearn_model(xs, ys, xs_test,ys_test, model):
+    X_train, X_eval, y_train, Y_eval = sklearn.model_selection.train_test_split(xs,ys,test_size=0.2)
 
-#     return model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,use_multiprocessing=True)
-
-
-
-def Logistic(xs,ys):
-    # def train_logistic(data,t):
-    # pipe = sklearn.pipeline.Pipeline(
-    #     [("scaling", sklearn.preprocessing.StandardScaler())] +
-    #     [("classifier", sklearn.linear_model.LogisticRegression(solver="saga", max_iter=MAX_ITER))]
-    # )
-    # pipe.fit(data, t)
-    # return pipe
- 
-
-    X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(xs,ys,test_size=0.2)
-    model = sklearn.linear_model.LogisticRegressionCV(verbose=1,max_iter=200)
     from joblib import parallel_backend
     with parallel_backend('threading', n_jobs=10):
         model.fit(X_train,y_train)
-    predicted = model.predict(X_test)
-    print()
-    print(f"accuracy: {sklearn.metrics.accuracy_score(y_test,predicted)}")
+        
+    print("eval accuracy:")
+    predicted = model.predict(X_eval)
+    print(sklearn.metrics.accuracy_score(Y_eval,predicted))
 
-def SVM(xs,ys):
-    X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(xs,ys,test_size=0.2)
-    n_estimators = 3
-    model = sklearn.ensemble.BaggingClassifier(sklearn.svm.SVC(kernel='rbf'), max_samples=1.0 / n_estimators, n_estimators=n_estimators)
-   
-    #model = sklearn.svm.LinearSVC(verbose=1)
-# sklearn.ensemble.BaggingClassifier(, max_samples=1.0 / n_estimators, n_estimators=n_estimators,n_jobs=3)
-    # from joblib import parallel_backend 
-    #with parallel_backend('threading', n_jobs=10):
-    model.fit(X_train,y_train)
-    predicted = model.predict(X_test)
-    print(sklearn.metrics.accuracy_score(y_test,predicted))
-
-def Gradient_forest(xs,ys):
-    import sklearn.ensemble
-    xs, X_test, ys, y_test = sklearn.model_selection.train_test_split(xs,ys,test_size=0.2)
-    n_estimators = 3
-    model = sklearn.ensemble.BaggingClassifier(sklearn.ensemble.GradientBoostingClassifier(verbose=1,min_samples_split=10), max_samples=0.5 / n_estimators, n_estimators=n_estimators,n_jobs=n_estimators)
-    # model = sklearn.ensemble.RandomForestClassifier(n_estimators=1000,verbose=1,min_samples_split=10)
-    from joblib import parallel_backend
-    with parallel_backend('threading', n_jobs=10):
-        model.fit(xs,ys)
-    predicted = model.predict(X_test)
-    print(sklearn.metrics.accuracy_score(y_test,predicted))
+    print("test accuracy:")
+    predicted = model.predict(xs_test)
+    print(sklearn.metrics.accuracy_score(ys_test,predicted))
 
 
-# def CNN1D(xs, ys):
-#     reg = None  #regularizers.l2(l=1e-4)
-#     act = LeakyReLU(alpha=0.1)
-#     model = Sequential([
-#         Conv1D(64,32,activation=act, kernel_regularizer=reg),
-#         MaxPooling1D(4),
-#         Conv1D(32,9,strides=1,activation=act, kernel_regularizer=reg),
-#         MaxPooling1D(4),
-#         Conv1D(32,3,activation=act, kernel_regularizer=reg),
-#         MaxPooling1D(2),
-#         Flatten(),
-#         Dense(16, activation=act, kernel_regularizer=reg),
-#         Dense(NUM_LABELS,activation='sigmoid')
-#     ])
-
-#     model.compile(loss='binary_crossentropy', metrics=['binary_accuracy'], optimizer='adam')#,tf.keras.metrics.AUC()
-#     in_shape = (None,xs.shape[1],xs.shape[2])
-#     model.build(input_shape=in_shape)
-#     model.summary()
-
-#     history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,use_multiprocessing=True)
-#     #eeee = [l.get_weights() for l in model.layers[0]]
-
-#     return history
-def CNN2D(xs, ys):
-    
-
+def CNN(xs, ys,xs_test,ys_test):
 
     reg = regularizers.l2(l=1e-4)
     act = LeakyReLU(alpha=0.1)
     model = Sequential([
+        # Conv2D(96,(3,3),activation=act, kernel_regularizer=reg,padding='same'),
         Conv2D(96,(15,15),strides=(3,3),activation=act, kernel_regularizer=reg,padding='same'),
+        # Conv2D(96,(5,5),activation=act, kernel_regularizer=reg,padding='same'),
+        # MaxPooling2D((3,3)),
+        # Conv2D(96,(3,3),activation=act, kernel_regularizer=reg,padding='same'),  
         MaxPooling2D((2,2)),
-        Conv2D(96,(3,3),activation=act, kernel_regularizer=reg,padding='same'),
+        Conv2D(96,(9,9),activation=act, kernel_regularizer=reg,padding='same'),  
         MaxPooling2D((2,2)),
-        Conv2D(96,(3,3),activation=act, kernel_regularizer=reg,padding='same'),
+        Conv2D(96,(5,5),activation=act, kernel_regularizer=reg,padding='same'), 
         MaxPooling2D((2,2)),
-        Conv2D(96,(3,3),activation=act, kernel_regularizer=reg,padding='same'),
+        Conv2D(96,(3,3),activation=act, kernel_regularizer=reg,padding='same'), 
         MaxPooling2D((2,2)),
         Flatten(),
         Dense(32, activation=act, kernel_regularizer=reg),
-        Dropout(0.2),
+        # Dropout(0.2),
         Dense(16, activation=act, kernel_regularizer=reg),
-        Dropout(0.2),
+        # Dropout(0.2),
         Dense(NUM_LABELS,activation='sigmoid')
     ])
 
@@ -251,68 +227,205 @@ def CNN2D(xs, ys):
     model.build(input_shape=in_shape)
     model.summary()
 
+    history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS*3, validation_split=0.2, verbose=1,workers=4,use_multiprocessing=True)
+
+
+    model.evaluate(xs_test,ys_test)
+    return history
+
+def CNN1D(xs, ys,xs_test,ys_test):
+
+    reg = regularizers.l2(l=1e-4)
+    act = LeakyReLU(alpha=0.1)
+    model = Sequential([
+        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        Flatten(),
+        Dense(32, activation=act, kernel_regularizer=reg),
+        Dense(NUM_LABELS,activation='sigmoid')
+    ])
+
+    model.compile(loss='binary_crossentropy', metrics=['binary_accuracy',tf.keras.metrics.AUC()])
+    in_shape = (None,xs.shape[1],xs.shape[2])
+    model.build(input_shape=in_shape)
+    model.summary()
+
     history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,workers=4,use_multiprocessing=True)
 
-    test_xs,test_ys = load_test_data_pieces(dir)
-    model.evaluate(test_xs,test_ys)
+
+    model.evaluate(xs_test,ys_test)
     #eeee = [l.get_weights() for l in model.layers[0]]
 
     return history
 
+def RNN(xs, ys,xs_test,ys_test):
+    
+    
+    
+
+    reg = regularizers.l2(l=1e-4)
+    act = LeakyReLU(alpha=0.1)
+    model = Sequential([
+        GRU(256,return_sequences=1),
+        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        GRU(256,return_sequences=1),
+        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        GRU(256,return_sequences=1),
+        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        # GRU(128),
+        Flatten(),
+        Dense(16, activation=act, kernel_regularizer=reg),
+        Dense(NUM_LABELS,activation='sigmoid')
+    ])#
+
+    model.compile(loss='binary_crossentropy', metrics=['binary_accuracy',tf.keras.metrics.AUC()], optimizer='adam')#
+    in_shape = (None,xs.shape[1],xs.shape[2])
+    model.build(input_shape=in_shape)
+    model.summary()
+
+    history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,workers=4,use_multiprocessing=True)
+
+
+    model.evaluate(xs_test,ys_test)
+
+    return history
+
+
+def app():
+    import tkinter as tk
+    root = tk.Tk()
+    btn_column = tk.Button(root, text="ldw")
+    btn_column.grid(column=0)
+
+    btn_columnspan = tk.Button(root, text="sts", command=10)
+    btn_columnspan.grid(columnspan=1)
+
+    btn_ipadx = tk.Button(root, text="ipadx of 4")
+    btn_ipadx.grid(ipadx=4)
+
+    btn_ipady = tk.Button(root, text="ipady of 4")
+    btn_ipady.grid(ipady=4)
+
+    btn_padx = tk.Button(root, text="padx of 4")
+    btn_padx.grid(padx=4)
+
+    btn_pady = tk.Button(root, text="pady of 4")
+    btn_pady.grid(pady=4)
+
+    btn_row = tk.Button(root, text="I'm in row 2")
+    btn_row.grid(row=2)
+
+    btn_rowspan = tk.Button(root, text="Rowspan of 2")
+    btn_rowspan.grid(rowspan=2)
+
+    btn_sticky = tk.Button(root, text="I'm stuck to north-east")
+    btn_sticky.grid(sticky=tk.NE)
+
+    root.mainloop()
+
+
+
 if __name__ == "__main__":
     print()
     dir = choose_directory_dialog()
-
-    
+ 
+    type = 'float32'
     xs,ys = load_data(dir)
-    # history = CNN2D(xs, ys)
+    xs_test,ys_test = load_tests(dir)
+    xs,ys,xs_test, ys_test = xs.astype(type),ys.astype(type),xs_test.astype(type), ys_test.astype(type)
+    # (samples, mel_features, time) to (samples, time, mel_features)
+    # without it the network caps at 75 acc, clearly not working 
+    xs = np.swapaxes(xs,1,2)
+    xs_test = np.swapaxes(xs_test,1,2)
+
+    # 4D data
+    # history = CNN(xs, ys,xs_test,ys_test)
 
 
+    xs = xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2]])
+    xs_test = xs_test.reshape([xs_test.shape[0],xs_test.shape[1],xs_test.shape[2]])
+    #3D data
 
+    RNN(xs, ys,xs_test,ys_test)
+    CNN1D(xs, ys,xs_test,ys_test)
 
     samples, a, b,c = xs.shape
     xs = xs.reshape([samples,a*b*c])
-    ys = np.array(list(map(lambda y: np.argmax(y)+1,ys))).astype('float16')
-    # c = dask.distributed.Client()
-    Gradient_forest(xs,ys)
-    # SVM(x1,y1)   
-    Logistic(xs,ys)
-    # SVM(x1,y1)    
+
+    samples, a, b,c = xs_test.shape
+    xs_test = xs_test.reshape([samples,a*b*c])
+    # 1D data
+    # MLP(xs,ys,xs_test,ys_test)
+
+    ys_test = np.array(list(map(lambda y: np.argmax(y)+1,ys_test)))
+    ys = np.array(list(map(lambda y: np.argmax(y)+1,ys)))
+
+    run_model = lambda m: Sklearn_model(xs,ys,xs_test,ys_test,m)
     
+    # flat data, flat targets 
+
+    # model = sklearn.linear_model.LogisticRegressionCV(verbose=0,max_iter=200)
+    # run_model(model)
+
+    # model = MLPClassifier([128,64,32], max_iter=15,verbose=1)
+    # run_model(model)
+
+
+    # model = KNeighborsClassifier()
+    # run_model(model)
+
+
+    # from sklearn.naive_bayes import GaussianNB,BernoulliNB
+    # model = GaussianNB()
+    # run_model(model)
     
-    InteractiveConsole(locals=globals()).interact()
+    # model = BayesianGaussianMixture(n_components=1)
+    # run_model(model)
+
+    # n_estimators = 3
+    # model = sklearn.ensemble.BaggingClassifier(sklearn.ensemble.GradientBoostingClassifier(verbose=1,min_samples_split=10), max_samples=0.5 / n_estimators, n_estimators=n_estimators,n_jobs=n_estimators)
+    # model = sklearn.ensemble.RandomForestClassifier(n_estimators=250,verbose=1,min_samples_split=5)
+    # run_model(model)
     
-   
+    # # model = sklearn.ensemble.BaggingClassifier(sklearn.svm.SVC(kernel='rbf'), max_samples=1.0 / n_estimators, n_estimators=n_estimators)
+    # model = sklearn.svm.LinearSVC(verbose=1)   
+    # run_model(model)
+    
+ 
+    # InteractiveConsole(locals=globals()).interact()
+
+    # from matplotlib import pyplot as plt
+    # plt.figure()
+    # plt.plot(history.history['binary_accuracy'])
+    # plt.plot(history.history['val_binary_accuracy'])
+    # plt.title('model accuracy')
+    # plt.ylabel('accuracy')
+    # plt.xlabel('epoch')
+    # plt.legend(['train', 'val'], loc='upper right')
+    # plt.show(block=False)
 
 
+    # plt.figure()
+    # plt.plot(history.history['loss'])
+    # plt.plot(history.history['val_loss'])
+    # plt.title('model loss')
+    # plt.ylabel('loss')
+    # plt.xlabel('epoch')
+    # plt.legend(['train', 'val'], loc='upper left')
+    # plt.show(block=False)
 
-    from matplotlib import pyplot as plt
-    plt.figure()
-    plt.plot(history.history['binary_accuracy'])
-    plt.plot(history.history['val_binary_accuracy'])
-    plt.title('model accuracy')
-    plt.ylabel('accuracy')
-    plt.xlabel('epoch')
-    plt.legend(['train', 'val'], loc='upper right')
-    plt.show(block=False)
-
-
-    plt.figure()
-    plt.plot(history.history['loss'])
-    plt.plot(history.history['val_loss'])
-    plt.title('model loss')
-    plt.ylabel('loss')
-    plt.xlabel('epoch')
-    plt.legend(['train', 'val'], loc='upper left')
-    plt.show(block=False)
-
-
-# NOTES
-# targets need to be one-hot encoded to work with accuracies in keras: otherwise use sparse accuracy
-# 
-# 
-# 
-# 
-# 
-# 
-# 
