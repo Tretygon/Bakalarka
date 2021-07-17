@@ -102,10 +102,10 @@ def parse_excel(path:str)-> Dict[str,Segments]:
 
     return data_info
 
-def choose_directory_dialog()-> str : 
+def choose_directory_dialog(title:str)-> str : 
     root = tkinter.Tk()
     root.withdraw()
-    selected = tkinter.filedialog.askdirectory(parent=root, title='Choose directory')
+    selected = tkinter.filedialog.askdirectory(parent=root, title=title)
     return selected
 
 
@@ -259,7 +259,6 @@ def augment_and_store(data: Tuple[Dict[str, Segment],Dict[str, Segment]],xs_dest
             # pathlib.Path(destination_path).mkdir(parents=True, exist_ok=True)
             # np.save(destination_path + data_ord.__str__(),mel)
 
-            data_ord += 1
             segments2_i += 1
             if segments2_i == len(segments2):
                 segments2_i = 0
@@ -337,9 +336,11 @@ def concat_small_files():
     np.save(dir +"/data_pieces/all_tests",all_data)
     np.save(dir +"/data_pieces/all_test_targets",targets)
     
+def load_data(dir):
+    return None
 if __name__ == "__main__":
     print()
-    dir = choose_directory_dialog()
+    dir = choose_directory_dialog('Choose directory')
     # concat_small_files()
     positive = load_stored_info(dir)
     positive = parse_excel(dir)

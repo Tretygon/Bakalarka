@@ -203,11 +203,10 @@ def CNN(xs, ys,xs_test,ys_test):
     act = LeakyReLU(alpha=0.1)
     model = Sequential([
         # Conv2D(96,(3,3),activation=act, kernel_regularizer=reg,padding='same'),
-        Conv2D(96,(15,15),strides=(3,3),activation=act, kernel_regularizer=reg,padding='same'),
+        Conv2D(96,(7,7),strides=(3,3),activation=act, kernel_regularizer=reg,padding='same'),
         # Conv2D(96,(5,5),activation=act, kernel_regularizer=reg,padding='same'),
-        # MaxPooling2D((3,3)),
+        MaxPooling2D((2,3)),
         # Conv2D(96,(3,3),activation=act, kernel_regularizer=reg,padding='same'),  
-        MaxPooling2D((2,2)),
         Conv2D(96,(9,9),activation=act, kernel_regularizer=reg,padding='same'),  
         MaxPooling2D((2,2)),
         Conv2D(96,(5,5),activation=act, kernel_regularizer=reg,padding='same'), 
@@ -227,7 +226,7 @@ def CNN(xs, ys,xs_test,ys_test):
     model.build(input_shape=in_shape)
     model.summary()
 
-    history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS*3, validation_split=0.2, verbose=1,workers=4,use_multiprocessing=True)
+    history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,workers=4,use_multiprocessing=True)
 
 
     model.evaluate(xs_test,ys_test)
@@ -247,11 +246,7 @@ def CNN1D(xs, ys,xs_test,ys_test):
         Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
         MaxPooling1D(2),
         Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
-        MaxPooling1D(2),
-        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
-        MaxPooling1D(2),
-        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
-        MaxPooling1D(2),
+        MaxPooling1D(3),
         Flatten(),
         Dense(32, activation=act, kernel_regularizer=reg),
         Dense(NUM_LABELS,activation='sigmoid')
@@ -278,18 +273,18 @@ def RNN(xs, ys,xs_test,ys_test):
     reg = regularizers.l2(l=1e-4)
     act = LeakyReLU(alpha=0.1)
     model = Sequential([
-        GRU(256,return_sequences=1),
-        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        GRU(128,return_sequences=1),
+        Conv1D(256,3,activation=act, kernel_regularizer=reg,padding='same'),
         MaxPooling1D(2),
-        GRU(256,return_sequences=1),
-        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        GRU(128,return_sequences=1),
         MaxPooling1D(2),
-        GRU(256,return_sequences=1),
-        Conv1D(512,3,activation=act, kernel_regularizer=reg,padding='same'),
+        Conv1D(256,3,activation=act, kernel_regularizer=reg,padding='same'),
         MaxPooling1D(2),
-        # GRU(128),
-        Flatten(),
-        Dense(16, activation=act, kernel_regularizer=reg),
+        GRU(128,return_sequences=1),
+        MaxPooling1D(2),
+        Conv1D(256,3,activation=act, kernel_regularizer=reg,padding='same'),
+        MaxPooling1D(2),
+        GRU(128),
         Dense(NUM_LABELS,activation='sigmoid')
     ])#
 
@@ -306,63 +301,38 @@ def RNN(xs, ys,xs_test,ys_test):
     return history
 
 
-def app():
-    import tkinter as tk
-    root = tk.Tk()
-    btn_column = tk.Button(root, text="ldw")
-    btn_column.grid(column=0)
-
-    btn_columnspan = tk.Button(root, text="sts", command=10)
-    btn_columnspan.grid(columnspan=1)
-
-    btn_ipadx = tk.Button(root, text="ipadx of 4")
-    btn_ipadx.grid(ipadx=4)
-
-    btn_ipady = tk.Button(root, text="ipady of 4")
-    btn_ipady.grid(ipady=4)
-
-    btn_padx = tk.Button(root, text="padx of 4")
-    btn_padx.grid(padx=4)
-
-    btn_pady = tk.Button(root, text="pady of 4")
-    btn_pady.grid(pady=4)
-
-    btn_row = tk.Button(root, text="I'm in row 2")
-    btn_row.grid(row=2)
-
-    btn_rowspan = tk.Button(root, text="Rowspan of 2")
-    btn_rowspan.grid(rowspan=2)
-
-    btn_sticky = tk.Button(root, text="I'm stuck to north-east")
-    btn_sticky.grid(sticky=tk.NE)
-
-    root.mainloop()
-
-
 
 if __name__ == "__main__":
     print()
     dir = choose_directory_dialog()
  
-    type = 'float32'
     xs,ys = load_data(dir)
     xs_test,ys_test = load_tests(dir)
+    type = 'float32'
     xs,ys,xs_test, ys_test = xs.astype(type),ys.astype(type),xs_test.astype(type), ys_test.astype(type)
     # (samples, mel_features, time) to (samples, time, mel_features)
-    # without it the network caps at 75 acc, clearly not working 
+    # without it RNN caps at 75 acc, clearly not working 
+    # CNN(xs, ys,xs_test,ys_test)
+
     xs = np.swapaxes(xs,1,2)
     xs_test = np.swapaxes(xs_test,1,2)
 
     # 4D data
-    # history = CNN(xs, ys,xs_test,ys_test)
+    # CNN(xs, ys,xs_test,ys_test)
 
+    xs = np.swapaxes(xs,1,2)
+    xs_test = np.swapaxes(xs_test,1,2)
+    # try how transposing effects sCNN1D
 
     xs = xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2]])
     xs_test = xs_test.reshape([xs_test.shape[0],xs_test.shape[1],xs_test.shape[2]])
     #3D data
-
-    RNN(xs, ys,xs_test,ys_test)
     CNN1D(xs, ys,xs_test,ys_test)
+    RNN(xs, ys,xs_test,ys_test)
+    xs = np.swapaxes(xs,1,2)
+    xs_test = np.swapaxes(xs_test,1,2)
+    CNN1D(xs, ys,xs_test,ys_test)
+    RNN(xs, ys,xs_test,ys_test)
 
     samples, a, b,c = xs.shape
     xs = xs.reshape([samples,a*b*c])
