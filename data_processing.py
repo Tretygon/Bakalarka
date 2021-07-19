@@ -3,18 +3,12 @@ import copy
 import functools
 from logging import error
 from mmap import ACCESS_COPY
-from tkinter.constants import E
 import numpy as np
 import typing
 from typing import List,Tuple,Dict
 import random
-import pickle
-import openpyxl
-import pathlib
 from code import InteractiveConsole
 import openpyxl as xl
-import tkinter
-import tkinter.filedialog
 from dataclasses import dataclass
 import pydub
 from pydub.playback import play
@@ -22,39 +16,19 @@ import os
 
 import IPython.display as ipd
 import numpy as np
-import pandas as pd
+# import pandas as pd
 import librosa
 import librosa.display
 import matplotlib.pyplot as plt
 
-from os.path import dirname, join as pjoin
-from scipy.io import wavfile
-import scipy.io
-import scipy as sp
-import matplotlib.pylab as pylab
-import image
-import joblib
-import dask.distributed
+# import scipy as sp
 from pathlib import Path
 
-import sklearn
-from sklearn import metrics 
-from sklearn.preprocessing import LabelEncoder
-import sklearn.multiclass
-from sklearn.model_selection import train_test_split,RandomizedSearchCV
+from sklearn.model_selection import train_test_split
 
-from keras.models import Sequential
-from keras.layers import Dense, Dropout, Activation, Flatten, Conv2D, MaxPooling2D,Conv1D,MaxPooling1D
-from keras.optimizers import Adam,SGD
-from keras.layers.normalization import BatchNormalization
-from keras.layers.advanced_activations import LeakyReLU
-import keras
-import tensorflow as tf
-from tensorflow.keras import regularizers
+from pathlib import Path
 
 
-
-import noisereduce as nr
 #tf.python.client.device_lib.list_local_devices()
 
 #config = tf.ConfigProto( device_count = {'GPU': 1 , 'CPU': 8} ) 
@@ -74,50 +48,31 @@ INCORRECT = np.eye(2)[0].astype('float16')
 #     seqs: List[Tuple[float,float]]
 
 
-# TODO: 
-# bootstrapping negative data instead of uniform selection?
-# randomise adjusting to set length
-# data augumentation
-#
-#
-#
-#
-#
-#
-#
-#
-#
-#
-def parse_excel(path:str)-> Dict[str,Segments]:
-    infos, audios = load_data_recursively(path)
+def parse_excel(path:str,rec_col,start_col,end_col)-> Dict[str,Segments]:
+    infos, audios = load_data_recursively(path,rec_col,start_col,end_col)
 
     data_info = {}
-
+    sentinel = object() #https://stackoverflow.com/questions/3114252/one-liner-to-check-whether-an-iterator-yields-at-least-one-element
     for name,segs in infos.items(): 
-        path = next(filter(lambda a: name in a, audios))                # next(...) == [0]
-        check_existence(path)
-        len_song = len(pydub.AudioSegment.from_wav(path))
-        new_segments = [align_to_set_len(SEGMENT_LEN, len_song, start, end) for start,end in segs] #length normalization
-        data_info[path] = new_segments
+        path = next(filter(lambda a: name in a, audios),sentinel)                # next(items) == items[0]
+        if path == sentinel or not os.path.exists(path): 
+            print(f"file not found: {name}")
+            error(f"file not found: {name}")
+        else:
+            len_song = len(pydub.AudioSegment.from_wav(path))
+            new_segments = [align_to_set_len(SEGMENT_LEN, len_song, start, end) for start,end in segs] #length normalization
+            data_info[path] = new_segments
 
     return data_info
 
-def choose_directory_dialog(title:str)-> str : 
-    root = tkinter.Tk()
-    root.withdraw()
-    selected = tkinter.filedialog.askdirectory(parent=root, title=title)
-    return selected
 
+def load_data_recursively(root:str,rec_col,start_col,end_col) -> Tuple[Dict[str, Segments],List[str]] : 
 
-def load_data_recursively(root:str) -> Tuple[Dict[str, Segments],List[str]] : 
-    from pathlib import Path
-
-
-    for p in Path(root).glob('*.xlsx'):
+    rec_info = {}
+    for p in Path(root).rglob('*.xlsx'):
         s = p.absolute().__str__()
         if ".~" in s or "~$" in s: continue              #temporary excel file thingy
-        rec_info = process_excel(s)
-        break
+        process_excel(s,rec_info,rec_col,start_col,end_col)
 
     all_audio_files : List[str] = []
     for p in Path(root).rglob('*.wav'):
@@ -127,43 +82,28 @@ def load_data_recursively(root:str) -> Tuple[Dict[str, Segments],List[str]] :
     return rec_info, all_audio_files
 
 
-def process_excel(file_path: str)->Dict[str, Segments]:
+def process_excel(file_path: str,rec_info:Dict[str, Segments],rec_col,start_col,end_col):
 
     ws = xl.load_workbook(filename = file_path).active
-    rec_infos : Dict[str, Segments] = {}
-
-    line = 0
 
     for r in list(ws.rows)[1:]:                 # stuff is 0 indexed despite the documentation claiming its 1 indexed 
-        rec_name = r[1].value
-        start = r[ord('O') - ord('A')].value 
-        end = r[ord('P') - ord('A')].value 
-        if end is None and start is  None: continue
+        rec_name = r[ord(rec_col) - ord('A')].value
+        start = r[ord(start_col) - ord('A')].value 
+        end = r[ord(end_col) - ord('A')].value 
+        
+        if end is None or start is None or not isinstance(start,float) or not isinstance(end,float): continue
+
         end *= 1000
         start *= 1000
-        line += 1
         
-        add_or_append(rec_infos,rec_name , (start, end))
-    return rec_infos
+        add_or_append(rec_info,rec_name, (float(start), float(end)))
 
 
 def load_recording(audio_file_path: str, segments:  Segments):
     song = pydub.AudioSegment.from_wav(audio_file_path)
     for [start, end] in  segments:
-        #TODO  feature engineering stuff
         seg = song[start:end]
-        #seg = seg.set_sample_width(2).set_channels(1)   
-        #seg.export("data/" + info.rec_name + i.__str__() + ".wav", ".wav")
-       
-        #librosa.l
         play(seg)
-
-def check_existence(s: str):
-    if not os.path.exists(s): 
-        b = os.path.exists(s)
-        print(f"file not found: {b}")
-        error(f"file not found: {b}")
-    else: return
 
 
 
@@ -171,9 +111,11 @@ def check_existence(s: str):
 
 def add_or_append(dict: Dict[str, Segments], key:str, value:Segment):
     if key in dict:
-        dict[key].append(value)
+        if not (value in dict[key]):
+            dict[key].append(value)
     else:
         dict[key] = [value]
+
 def add_or_append_multiple(dict: Dict[str, Segments], key_values: List[Tuple[str, Segment]]):
     for key,value in key_values:
         if key in dict:
@@ -212,7 +154,7 @@ def align_to_set_len(const, song_len, start, end):
 
     return start,end
 
-def store_data_pieces(data: Dict[str, Segments], destination_path: str,xs_dest_path: str,ys_dest_path: str,y):
+def no_aug_data_pieces(data: Dict[str, Segments], y):
     ret_xs,ret_ys = [],[]
     import pydub
     for path,segments in data.items(): 
@@ -224,14 +166,25 @@ def store_data_pieces(data: Dict[str, Segments], destination_path: str,xs_dest_p
             mel = To_Mel(raw,sr)
             ret_xs.append(mel)
             ret_ys.append(y)
-            # pathlib.Path(destination_path).mkdir(parents=True, exist_ok=True)
-            # np.save(destination_path + data_ord.__str__(),mel)
-            # data_ord += 1
-    np.save(xs_dest_path,np.array(ret_xs))
-    np.save(ys_dest_path,np.array(ret_ys))
+    return ret_xs,ret_ys
 
-def augment_and_store(data: Tuple[Dict[str, Segment],Dict[str, Segment]],xs_dest_path: str,ys_dest_path: str,y):
-    data1,data2 = data
+# generator that chops a recording into SEGMENT_LEN sized pieces and transforms them to MFCC
+# 75% overlap
+def partition_recording(file):
+    from itertools import chain
+    import pydub
+    song = pydub.AudioSegment.from_wav(file)
+    ln = len(song)
+    max = ((ln//SEGMENT_LEN)*(SEGMENT_LEN)) 
+    for start in chain(range(0,max,SEGMENT_LEN//4), [ln-SEGMENT_LEN]):
+        end = start+SEGMENT_LEN
+        part = song[start:end] 
+        sr = part.frame_rate
+        mel = To_Mel(part ,sr)
+
+        yield mel,start,end,file
+
+def augment_data_pieces(data1: Dict[str, Segment],data2: Dict[str, Segment],y):
     ret_xs,ret_ys = [],[]
     import pydub
     items2_i = 0
@@ -250,25 +203,22 @@ def augment_and_store(data: Tuple[Dict[str, Segment],Dict[str, Segment]],xs_dest
             seg1 = song1[start1:end1]
             seg2 = song2[start2:end2]
             raw1 = np.array(seg1.get_array_of_samples())
-            raw2 = np.array(seg2.get_array_of_samples())*0.5
+            raw2 = np.array(seg2.get_array_of_samples())*random.random()
             sr = song1.frame_rate
             mel = To_Mel(np.add(raw1,raw2),sr)
 
             ret_xs.append(mel)
             ret_ys.append(y)
-            # pathlib.Path(destination_path).mkdir(parents=True, exist_ok=True)
-            # np.save(destination_path + data_ord.__str__(),mel)
 
             segments2_i += 1
             if segments2_i == len(segments2):
                 segments2_i = 0
                 items2_i += 1
-                if items2_i == len(items2): return
+                if items2_i == len(items2): return ret_xs, ret_ys
                 (path2,segments2) = items2[items2_i]
                 random.shuffle(segments2)
                 song2 = pydub.AudioSegment.from_wav(path2)
-    np.save(xs_dest_path,np.array(ret_xs))
-    np.save(ys_dest_path,np.array(ret_ys))
+    return ret_xs, ret_ys
 
 def as_dict(lst : List[Tuple[str, Segments]])-> Dict[str, Segments]:
     return { path:segs for path,segs in lst}
@@ -289,11 +239,11 @@ def Make_negative_data(n: int,  info: Dict[str, Segments])-> Dict[str, Segments]
         
 def To_Mel(data,sr):  
     
-    S = librosa.feature.melspectrogram(data.astype('float16'), sr=sr, n_fft=1028, hop_length=256, n_mels=128)
+    S = librosa.feature.melspectrogram(data.astype('float32'), sr=sr, n_fft=1028, hop_length=256, n_mels=128)
     
     log_mfcc = librosa.feature.mfcc(S=np.log(S+1e-6), sr=sr, n_mfcc=48)
     
-    return log_mfcc.astype('float16')
+    return log_mfcc.astype('float16').T
 
 
 def Single_file_choose_negative_data(file: str,segs: Segments, n:int)-> Segments:
@@ -312,40 +262,34 @@ def Single_file_choose_negative_data(file: str,segs: Segments, n:int)-> Segments
             ret.append((start,end))
             n -= 1
 
-def concat_small_files():
-    all_pos = list(map(np.load,Path(dir + "/data_pieces/augmentation/positive").glob('*.npy')))
-    all_neg = list(map(np.load,Path(dir + "/data_pieces/augmentation/negative").glob('*.npy')))
-    all_data = np.array(all_pos+all_neg)
-    targets = np.append(np.tile(CORRECT,[len(all_pos),1]),np.tile(INCORRECT,[len(all_neg),1]),axis=0)
+# def concat_small_files():
+#     all_pos = list(map(np.load,Path(dir + "/data_pieces/augmentation/positive").glob('*.npy')))
+#     all_neg = list(map(np.load,Path(dir + "/data_pieces/augmentation/negative").glob('*.npy')))
+#     all_data = np.array(all_pos+all_neg)
+#     targets = np.append(np.tile(CORRECT,[len(all_pos),1]),np.tile(INCORRECT,[len(all_neg),1]),axis=0)
     
-    indices = np.arange(all_data.shape[0])
-    np.random.shuffle(indices)
-    all_data = all_data[indices]
-    targets = targets[indices]
+   
     
-    np.save(dir +"/data_pieces/augmentation/all_data",all_data)
-    np.save(dir +"/data_pieces/augmentation/all_targets",targets)
+#     np.save(dir +"/data_pieces/augmentation/all_data",all_data)
+#     np.save(dir +"/data_pieces/augmentation/all_targets",targets)
 
 
-    all_pos = list(map(np.load,Path(dir + "/data_pieces/test/positive").glob('*.npy')))
-    all_neg = list(map(np.load,Path(dir + "/data_pieces/test/negative").glob('*.npy')))
-    all_data = np.array(all_pos+all_neg)
-    targets = np.append(np.tile(CORRECT,[len(all_pos),1]),np.tile(INCORRECT,[len(all_neg),1]),axis=0)
+#     all_pos = list(map(np.load,Path(dir + "/data_pieces/test/positive").glob('*.npy')))
+#     all_neg = list(map(np.load,Path(dir + "/data_pieces/test/negative").glob('*.npy')))
+#     all_data = np.array(all_pos+all_neg)
+#     targets = np.append(np.tile(CORRECT,[len(all_pos),1]),np.tile(INCORRECT,[len(all_neg),1]),axis=0)
 
     
-    np.save(dir +"/data_pieces/all_tests",all_data)
-    np.save(dir +"/data_pieces/all_test_targets",targets)
+#     np.save(dir +"/data_pieces/all_tests",all_data)
+#     np.save(dir +"/data_pieces/all_test_targets",targets)
     
-def load_data(dir):
-    return None
-if __name__ == "__main__":
-    print()
-    dir = choose_directory_dialog('Choose directory')
-    # concat_small_files()
-    positive = load_stored_info(dir)
-    positive = parse_excel(dir)
+def extract_training_data(report_progress,dir,rec_col,start_col,end_col,augmentations):
+    from pathos.multiprocessing import Pool
+    pool =  Pool(2+2*augmentations) 
+
+    positive = parse_excel(dir,rec_col,start_col,end_col)
+    report_progress(25)
     all_positive = positive
-    save_info(positive)
     flatten=lambda dict: [(file,s) for file,segs in dict.items() for s in segs]
     as_dict = lambda x: add_or_append_multiple({},x)
 
@@ -356,32 +300,83 @@ if __name__ == "__main__":
     num_of_train_data = len(positive)
     positive,positive_test = as_dict(positive),as_dict(positive_test)
     
-    
-    k = 4  
+    k = 1 + 3*augmentations  # number of 'buckets of negatives)
     negative = Make_negative_data(num_of_all_data + num_of_train_data*(k-1),all_positive)  #take the dict before separating test data to not lose any files to make negative data
     negative = flatten(negative)
     random.shuffle(negative)
     negative,negative_test = train_test_split(negative,test_size=num_of_test_data)
-    
-    #split negatives into k buckets, because of augemtation, and 
+    report_progress(50)
+    #split negatives into k buckets, because of augmentation, and 
     #convert back to dict to group together all the segments from the same file
     #saves a loooot of unnecessary loading later
     negative = [as_dict(negative[i::k]) for i in range(k)]
     negative_test = as_dict(negative_test)
+    work = [
+        [no_aug_data_pieces,[positive,CORRECT]],
+        [no_aug_data_pieces,[negative[k-1],INCORRECT]],
+
+        *[[augment_data_pieces,[positive,negative[i],CORRECT]] for i in range(augmentations)],
+
+        *[[augment_data_pieces,[negative[i],negative[i+1],INCORRECT]] for i in range(augmentations,augmentations*3,2)]
+    ]
+    data = list(pool.map(lambda work: work[0](*(work[1])),work))
+
+    xs = []
+    ys = []
+    for d in data:
+        for x in d[0]:
+            xs.append(x)
+        for y in d[1]:
+            ys.append(y)
+    xs = np.array(xs)
+    ys = np.array(ys)
+
+
+    report_progress(75)
+    
+    indices = np.arange(xs.shape[0])
+    np.random.shuffle(indices)
+    xs = xs[indices]
+    ys = ys[indices]
+
+
+
+    data = list(pool.map(lambda work: work[0](*(work[1])),
+        [
+            [no_aug_data_pieces,[positive_test,CORRECT]],
+            [no_aug_data_pieces,[negative_test,INCORRECT]]
+        ]))
+
+    pool.close()
+    pool.terminate()
+    xs_test = []
+    ys_test = []
+    for d in data:
+        for x in d[0]:
+            xs_test.append(x)
+        for y in d[1]:
+            ys_test.append(y)
+    xs_test = np.array(xs_test)
+    ys_test = np.array(ys_test)
+
+    report_progress(100)
+
+    return xs, xs_test, ys, ys_test
+# pathlib.Path(destination_path).mkdir(parents=True, exist_ok=True)
+
+def merge_training_data(files):
+    all = [np.load(f) for f in files]
+    xs = np.concatenate([a[0] for a in all], axis=0)
+    xs_test = np.concatenate([a[1] for a in all], axis=0)
+    ys = np.concatenate([a[2] for a in all], axis=0)
+    ys_test = np.concatenate([a[3] for a in all], axis=0)
+    return xs,xs_test,ys,ys_test
     
 
-    from pathos.multiprocessing import ProcessPool
-    work = [
-        [augment_and_store,(positive,negative[2]), dir + "/data_pieces/augmented/positive/aug", dir + "/data_pieces/augmented/positive/aug_t",CORRECT],
-        [augment_and_store,(negative[0],negative[1]), dir + "/data_pieces/augmented/negative/aug", dir + "/data_pieces/augmented/negative/aug_t",INCORRECT],
 
-        [store_data_pieces,positive, dir + "/data_pieces/augmented/positive/norm", dir + "/data_pieces/augmented/positive/norm_t",CORRECT],
-        [store_data_pieces,negative[3], dir + "/data_pieces/augmented/negative/norm", dir + "/data_pieces/augmented/negative/norm_t",INCORRECT],
 
-        [store_data_pieces,positive_test, dir + "/data_pieces/test/positive/pos", dir + "/data_pieces/augmented/positive/pos_t",CORRECT]
-        [store_data_pieces,negative_test, dir + "/data_pieces/test/negative/neg", dir + "/data_pieces/augmented/negative/neg_t",INCORRECT]
-    ]
-    # ProcessPool(nodes=4).map(lambda args:args[0](args[1],args[2],args[3]),work)
+if __name__ == "__main__":
+    extract_training_data('B','O','P',lambda _: None)
 
 
 

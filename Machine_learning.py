@@ -69,7 +69,7 @@ import noisereduce as nr
 # keras.backend.set_session(sess)
 
 EPOCHS = 20
-BATCH_SIZE = 50
+BATCH_SIZE = 100
 MAX_ITER = 15
 NUM_LABELS = 2
 Segment = Tuple[float,float]
@@ -84,7 +84,6 @@ INCORRECT = np.eye(CLASSES)[0].astype('float16')
 
 
 
-
 def choose_directory_dialog()-> str : 
     root = tkinter.Tk()
     root.withdraw()
@@ -94,16 +93,14 @@ def choose_directory_dialog()-> str :
 
 
 def load_data(dir):
-    xs = np.load(dir + "/data_pieces/augmentation/all_data.npy")
-    ys = np.load(dir + "/data_pieces/augmentation/all_targets.npy")
-    return xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2],1]), ys
-    # return xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2],1]), ys
+    xs = np.load(dir + "/xs")#"/data_pieces/augmentation/all_data.npy")
+    ys = np.load(dir + "/ys")#"/data_pieces/augmentation/all_targets.npy")
+    return xs, ys 
 
 def load_tests(dir):
-    xs = np.load(dir + "/data_pieces/all_tests.npy")
-    ys = np.load(dir + "/data_pieces/all_test_targets.npy")
-    return xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2],1]), ys
-    # return xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2],1]), ys
+    xs = np.load(dir + "/xs_test")#"/data_pieces/all_tests.npy")
+    ys = np.load(dir + "/ys_test")#"/data_pieces/all_test_targets.npy")
+    return xs, ys        #xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2],1])
 
 def load_audios(dir:str)-> Tuple[List[object],List[bool]]:     # bool = target
     from pathlib import Path
@@ -179,7 +176,7 @@ def MLP(xs, ys,xs_test,ys_test):
     
     history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,use_multiprocessing=True)
     model.evaluate(xs_test,ys_test)
-    return
+    return model,history
 
 def Sklearn_model(xs, ys, xs_test,ys_test, model):
     X_train, X_eval, y_train, Y_eval = sklearn.model_selection.train_test_split(xs,ys,test_size=0.2)
@@ -199,13 +196,15 @@ def Sklearn_model(xs, ys, xs_test,ys_test, model):
 
 def CNN(xs, ys,xs_test,ys_test):
 
+    xs = xs.reshape((None,xs.shape[1],xs.shape[2],1))
+    xs_test = xs_test.reshape((None,xs_test.shape[1],xs_test.shape[2],1))
     reg = regularizers.l2(l=1e-4)
     act = LeakyReLU(alpha=0.1)
     model = Sequential([
         # Conv2D(96,(3,3),activation=act, kernel_regularizer=reg,padding='same'),
-        Conv2D(96,(7,7),strides=(3,3),activation=act, kernel_regularizer=reg,padding='same'),
+        Conv2D(96,(3,12),strides=(1,6),activation=act, kernel_regularizer=reg,padding='same'),
         # Conv2D(96,(5,5),activation=act, kernel_regularizer=reg,padding='same'),
-        MaxPooling2D((2,3)),
+        MaxPooling2D((3,2)),
         # Conv2D(96,(3,3),activation=act, kernel_regularizer=reg,padding='same'),  
         Conv2D(96,(9,9),activation=act, kernel_regularizer=reg,padding='same'),  
         MaxPooling2D((2,2)),
@@ -230,7 +229,7 @@ def CNN(xs, ys,xs_test,ys_test):
 
 
     model.evaluate(xs_test,ys_test)
-    return history
+    return model,history
 
 def CNN1D(xs, ys,xs_test,ys_test):
 
@@ -263,13 +262,36 @@ def CNN1D(xs, ys,xs_test,ys_test):
     model.evaluate(xs_test,ys_test)
     #eeee = [l.get_weights() for l in model.layers[0]]
 
-    return history
+    return model,history
 
 def RNN(xs, ys,xs_test,ys_test):
-    
-    
-    
+    reg = regularizers.l2(l=1e-4)
+    act = LeakyReLU(alpha=0.1)
+    model = Sequential([
+        GRU(256,return_sequences=1),
+        GRU(128,return_sequences=1),
+        GRU(128),
+        Dense(NUM_LABELS,activation='sigmoid')
+    ])#
 
+    model.compile(loss='binary_crossentropy', metrics=['binary_accuracy',tf.keras.metrics.AUC()], optimizer='adam')#
+    in_shape = (None,xs.shape[1],xs.shape[2])
+    model.build(input_shape=in_shape)
+    model.summary()
+
+    history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,workers=4,use_multiprocessing=True)
+    model.evaluate(xs_test,ys_test)
+
+    return model,history
+
+def Train_models(xs, ys,xs_test,ys_test):
+    CRNN(xs, ys,xs_test,ys_test)
+    RNN(xs, ys,xs_test,ys_test)
+    CNN(xs, ys,xs_test,ys_test)
+    out = CNN1D(xs, ys,xs_test,ys_test)
+    return out
+
+def CRNN(xs, ys,xs_test,ys_test):
     reg = regularizers.l2(l=1e-4)
     act = LeakyReLU(alpha=0.1)
     model = Sequential([
@@ -294,11 +316,9 @@ def RNN(xs, ys,xs_test,ys_test):
     model.summary()
 
     history = model.fit(xs,ys, batch_size=BATCH_SIZE, epochs=EPOCHS, validation_split=0.2, verbose=1,workers=4,use_multiprocessing=True)
-
-
     model.evaluate(xs_test,ys_test)
 
-    return history
+    return model,history
 
 
 
@@ -314,26 +334,17 @@ if __name__ == "__main__":
     # without it RNN caps at 75 acc, clearly not working 
     # CNN(xs, ys,xs_test,ys_test)
 
-    xs = np.swapaxes(xs,1,2)
-    xs_test = np.swapaxes(xs_test,1,2)
+    # xs = np.swapaxes(xs,1,2)
+    # xs_test = np.swapaxes(xs_test,1,2)
 
     # 4D data
     # CNN(xs, ys,xs_test,ys_test)
 
-    xs = np.swapaxes(xs,1,2)
-    xs_test = np.swapaxes(xs_test,1,2)
-    # try how transposing effects sCNN1D
 
-    xs = xs.reshape([xs.shape[0],xs.shape[1],xs.shape[2]])
-    xs_test = xs_test.reshape([xs_test.shape[0],xs_test.shape[1],xs_test.shape[2]])
     #3D data
     CNN1D(xs, ys,xs_test,ys_test)
-    RNN(xs, ys,xs_test,ys_test)
-    xs = np.swapaxes(xs,1,2)
-    xs_test = np.swapaxes(xs_test,1,2)
-    CNN1D(xs, ys,xs_test,ys_test)
-    RNN(xs, ys,xs_test,ys_test)
-
+    CRNN(xs, ys,xs_test,ys_test)
+    
     samples, a, b,c = xs.shape
     xs = xs.reshape([samples,a*b*c])
 

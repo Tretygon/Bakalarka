@@ -1,0 +1,12 @@
+if the application is frozen it means it is doing work! check task manager. Do not close the application and wait patiently. 
+Extracting training data takes a lot of time - even hours. Especially if the data is located on a HDD.
+
+if the automatic saving of the model after training is cancelled the model is still kept loaded in the application
+
+Augmentation: 
+    take positive data on put a background noise on top of them
+    the more the augmentations the better the resulting model
+    but at the cost of requiring more resources during extraction and training
+    big augmentations may not fit into RAM 
+
+if you run into any problems feel free to email me at: TomasZasadil@gmail.com
