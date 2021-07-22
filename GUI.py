@@ -1,107 +1,24 @@
-import copy
-import functools
-from logging import error
-from mmap import ACCESS_COPY
-from tkinter.constants import DISABLED, E
-from keras.backend import conv1d, dropout, elu
-from keras.layers.convolutional import Conv1D
-from matplotlib.colors import cnames
 import numpy as np
 import typing
 from typing import Callable, List,Tuple,Dict
-import random
-import pickle
-import openpyxl
-import pathlib
-from code import InteractiveConsole
-import openpyxl as xl
 import tkinter
 import tkinter.filedialog
 from dataclasses import dataclass
-import pydub
-from pydub.playback import play
-import os
 
 import IPython.display as ipd
 import numpy as np
 import pandas as pd
-import librosa
-import librosa.display
-import matplotlib.pyplot as plt
 
-import Machine_learning as ML
 import data_processing as Processing
-import keras
+# processing loaded globally
+# ML loaded lazily, since it loads some TF dlls and they then get unnecessarily loaded in each thread during data extracting chugging RAM completely unncesssarily
 
 from tkinter import *
 
 from tkinter import messagebox
 
+import setuptools
 
-def with_dir(f:Callable[[str],None]):
-    dir = Processing.choose_directory_dialog()
-    if dir:
-        f(dir)
-def delayed(f:Callable[...,None], params):
-    return lambda: f(*params)
-
-# https://keras.io/guides/writing_your_own_callbacks/
-class ModelCallbacks(keras.callbacks.Callback):
-    def on_train_begin(self, logs=None):
-        keys = list(logs.keys())
-        print("Starting training; got log keys: {}".format(keys))
-
-    def on_train_end(self, logs=None):
-        keys = list(logs.keys())
-        print("Stop training; got log keys: {}".format(keys))
-
-    def on_epoch_begin(self, epoch, logs=None):
-        keys = list(logs.keys())
-        print("Start epoch {} of training; got log keys: {}".format(epoch, keys))
-
-    def on_epoch_end(self, epoch, logs=None):
-        keys = list(logs.keys())
-        print("End epoch {} of training; got log keys: {}".format(epoch, keys))
-
-    def on_test_begin(self, logs=None):
-        keys = list(logs.keys())
-        print("Start testing; got log keys: {}".format(keys))
-
-    def on_test_end(self, logs=None):
-        keys = list(logs.keys())
-        print("Stop testing; got log keys: {}".format(keys))
-
-    def on_predict_begin(self, logs=None):
-        keys = list(logs.keys())
-        print("Start predicting; got log keys: {}".format(keys))
-
-    def on_predict_end(self, logs=None):
-        keys = list(logs.keys())
-        print("Stop predicting; got log keys: {}".format(keys))
-
-    def on_train_batch_begin(self, batch, logs=None):
-        keys = list(logs.keys())
-        print("...Training: start of batch {}; got log keys: {}".format(batch, keys))
-
-    def on_train_batch_end(self, batch, logs=None):
-        keys = list(logs.keys())
-        print("...Training: end of batch {}; got log keys: {}".format(batch, keys))
-
-    def on_test_batch_begin(self, batch, logs=None):
-        keys = list(logs.keys())
-        print("...Evaluating: start of batch {}; got log keys: {}".format(batch, keys))
-
-    def on_test_batch_end(self, batch, logs=None):
-        keys = list(logs.keys())
-        print("...Evaluating: end of batch {}; got log keys: {}".format(batch, keys))
-
-    def on_predict_batch_begin(self, batch, logs=None):
-        keys = list(logs.keys())
-        print("...Predicting: start of batch {}; got log keys: {}".format(batch, keys))
-
-    def on_predict_batch_end(self, batch, logs=None):
-        keys = list(logs.keys())
-        print("...Predicting: end of batch {}; got log keys: {}".format(batch, keys))
 
 
 def app():
@@ -109,81 +26,112 @@ def app():
     from tkinter import ttk
 
     root = tk.Tk()
-    root.title('Terminator nursery')
+    root.title('Bird recognition')
     root.resizable(False, False)
     
     xs, xs_test, ys, ys_test = None, None, None, None 
     model = None
 
+    working = False
     training_data_label = tk.Label(root,bg='brown1', text = "              Training data               ")
     training_data_label.grid(row=0,column=3, sticky='nesw',columnspan=2)
     model_label = tk.Label(root,bg='brown1', text = "AI model")
     model_label.grid(row=1,column=3, sticky='nesw',columnspan=2)
 
     
-
+    # get directory and extract data for training from all the filest within
     def extract_data():
-        nonlocal model,xs, xs_test, ys, ys_test
+        nonlocal model,xs, xs_test, ys, ys_test,working
+        if working: return 
+        working = True
         dial = tkinter.Tk()
         dial.withdraw()
         selected = tkinter.filedialog.askdirectory(parent=dial,title='Choose a directory')
-        if selected is None or len(selected) == 0: return
+        if selected is None or len(selected) == 0: 
+            working = False
+            return
         xs, xs_test, ys, ys_test = None, None, None, None       #free memory
-        xs, xs_test, ys, ys_test = validate_and_use_inputs(lambda a,b,c,d: Processing.extract_training_data(update_progress,selected,a,b,c,d))
+        xs, xs_test, ys, ys_test = validate_and_use_inputs(lambda a,b,c,d: Processing.extract_training_data(selected,a,b,c,d))
         training_data_label['bg'] = 'lime green'
         save_data()
+        working = False
 
-
+    #select and load a file with training data
     def load_data():
-        nonlocal model,xs, xs_test, ys, ys_test
+        nonlocal model,xs, xs_test, ys, ys_test,working
+        if working: return 
+        working = True
         dial = tkinter.Tk()
         dial.withdraw()
         selected = tkinter.filedialog.askopenfilename(parent=dial, title="Select training data", defaultextension='.npz',filetypes=[['npz files','*.npz']])
-        if selected is None or len(selected) == 0: return
+        if selected is None or len(selected) == 0: 
+            working = False
+            return
         loaded = np.load(selected)
         xs1, xs_test1, ys1, ys_test1 = loaded['arr_0.npy'],loaded['arr_1.npy'],loaded['arr_2.npy'],loaded['arr_3.npy']
         if xs1 is not None:
             xs, xs_test, ys, ys_test = xs1, xs_test1, ys1, ys_test1
             training_data_label['bg'] = 'lime green'
+        working = False
 
-
+    #select several files with data and merge them 
     def merge_data():
-        nonlocal model,xs, xs_test, ys, ys_test
+        nonlocal model,xs, xs_test, ys, ys_test,working
+        if working: return 
+        working = True
         dial = tkinter.Tk()
         dial.withdraw()
-        selected = tkinter.filedialog.askopenfilenames(parent=dial, title="Select data to merge", defaultextension='.npz',filetypes=[['npz files','*.npz']])
-        if selected is None or len(selected) == 0: return
+        selected = tkinter.filedialog.askopenfilenames(parent=dial, title="Select multiple files to be merged", defaultextension='.npz',filetypes=[['npz files','*.npz']])
+        if selected is None or len(selected) == 0: 
+            working = False
+            return
         xs1, xs_test1, ys1, ys_test1  = Processing.merge_training_data(selected)
         if xs1 is not None:
             xs, xs_test, ys, ys_test = xs1, xs_test1, ys1, ys_test1
             training_data_label['bg'] = 'lime green'
             save_data()
+        working = False
             
+    #take training data and save them to a file of choice
     def save_data():
-        nonlocal model, xs, xs_test, ys, ys_test
-        if xs is None: return
+        nonlocal model,xs, xs_test, ys, ys_test,working
+        if working: return 
+        working = True
+        if xs is None: 
+            working = False
+            return
         dial = tkinter.Tk()
         dial.withdraw()
         selected = tkinter.filedialog.asksaveasfilename(parent=dial, title="Save the training data", defaultextension='.npz',filetypes=[['npz files','*.npz']])
-        if selected is None or len(selected) == 0: return
+        if selected is None or len(selected) == 0: 
+            working = False
+            return
         np.savez(selected,xs, xs_test, ys, ys_test)
+        working = False
 
-
-
+    #use training data to train a ML model
     def train_model():
-        nonlocal model,xs, xs_test, ys, ys_test
+        import Machine_learning as ML
+        
+        nonlocal model,xs, xs_test, ys, ys_test,working
+        if working: return 
+        working = True
         if xs is None or ys is None or ys_test is None or xs_test is None:
             messagebox.showinfo(f"Error", f"Training data not loaded")
+            working = False
             return
 
         model1,history = ML.Train_models(xs, ys, xs_test, ys_test)
         if model1 is not None:
             model = model1
             model_label['bg'] = 'lime green'
-        print()
+        working = False
 
+    # take model and save it to a directory of choise
     def save_model():
-        nonlocal model
+        nonlocal model,xs, xs_test, ys, ys_test,working
+        if working: return 
+        working = True
         if model:
             dial = tkinter.Tk()
             dial.withdraw()
@@ -192,48 +140,65 @@ def app():
                 model.save(selected)
         else:
             messagebox.showinfo(f"Error", f"No model is loaded")
+            working = False
             return
+        working = False
 
+    # load model from target directory
     def load_model():
-        nonlocal model
+        nonlocal model,xs, xs_test, ys, ys_test,working
+        if working: return 
+        working = True
         dial = tkinter.Tk()
         dial.withdraw()
-        selected = tkinter.filedialog.askopenfilename(parent=dial, title="Load model")
+        selected = tkinter.filedialog.askdirectory(parent=dial, title="Load model")
         if selected:
-            model1 = keras.models.load_model(selected)
+            from keras.models import load_model
+            model1 = load_model(selected)
             if model1 != None:
                 model = model1
                 model_label['bg'] = 'lime green'
 
-        print()
+        working = False
 
+    # apply the model to several files, creating scv files with results 
     def apply_model():
-        nonlocal model
+        nonlocal model,xs, xs_test, ys, ys_test,working
+        if working: return 
+        working = True
+        
+        import Machine_learning as ML
         import csv
 
         if model is None:
             messagebox.showinfo(f"Error", f"No model loaded") 
+            working = False
             return
         dial = tkinter.Tk()
         dial.withdraw()
         selected = tkinter.filedialog.askopenfilenames(parent=dial, title="Choose recordings",defaultextension='wav')
-        if selected is None  or len(selected) == 0: return 
+        if selected is None  or len(selected) == 0: 
+            working = False
+            return 
 
         for file in selected:
             
             with open(f'{file}_results.csv', mode='w') as results_file:
-                fieldnames = ['file', 'start', 'end', 'activity']
-                writer = csv.writer(results_file,fieldnames=fieldnames)#, delimiter=';', quotechar='"', quoting=csv.QUOTE_MINIMAL
+                writer = csv.writer(results_file)#, delimiter=';', quotechar='"', quoting=csv.QUOTE_MINIMAL
                 pieces = Processing.partition_recording(file)
-                rows = []
-                for piece, start, end, file in pieces:
-                    y = model.call(piece)#.predict(use_multiprocessing=True)
-                    label = np.argmax(y)#[0]
-                    rows.append([file,start,end,label])
-                writer.writerows(rows)
+                rows = [['start', 'end', 'activity']]
+                for data, infos in pieces:
+                    #TODO: better batching, ideally being build parallel from the model
+                    y = model.predict(data)
+                    labels = np.argmax(y,axis=1)
+                    for l,i in zip(labels,infos):
+                        start, end = i
+                        rows.append([start,end,l])
+                    
+                    writer.writerows(rows)
+                    rows = []
+        working = False
     
-    def partition_recording(file):
-        mel,start,end,file = Processing.partition_recording()
 
     btn_extract = tk.Button(root, text="Extract data", command=extract_data)   #TODO: saving dialog?
     btn_extract.grid(row=0,column=0, sticky='nesw') 
@@ -249,28 +214,19 @@ def app():
 
     btn_merge_data = tk.Button(root, text="Merge data", command=merge_data)
     btn_merge_data.grid(row=1,column=1,sticky='nesw')
-    #popup with elapsed time      ?? and accuracy ??
-    # name the model?
-    #error if no data available
-
     
     btn_load_model = tk.Button(root, text="Load model", command=load_model)
     btn_load_model.grid(row=2,column=0, sticky='nesw')
 
-
     btn_save_model = tk.Button(root, text="Save model", command=save_model)
     btn_save_model.grid(row=2,column=1, sticky='nesw')
-    #error if no model available
 
     btn_train_model = tk.Button(root, text="Train model", command=train_model)
     btn_train_model.grid(row=3,column=0,sticky='nesw')
 
     btn_apply_model = tk.Button(root, text="Apply model on data", command=apply_model)
     btn_apply_model.grid(row=3,column=1, sticky='nesw')
-    #error if no model available
-
-    # stop button?
-    # open console button?
+   
 
 
 
@@ -317,12 +273,13 @@ def app():
         vals.append(int(val))
         return f(*vals)
     
-    progress_bar = ttk.Progressbar(root, orient = tk.HORIZONTAL, length = 100, mode = 'determinate')
-    progress_bar.grid(row=2,column=3,columnspan=1, sticky='nesw')
+    # progress_bar = ttk.Progressbar(root, orient = tk.HORIZONTAL, length = 100, mode = 'determinate')
+    # progress_bar.grid(row=2,column=3,columnspan=2, sticky='nesw')
     
-    def update_progress(val:int):
-        progress_bar['value'] = val
-        root.update_idletasks()
+    # def update_progress(val:int):
+    #     progress_bar['value'] = val
+    #     root.update()
+    #     root.update_idletasks()
 
     buttons = [btn_extract,btn_load,btn_train_model,btn_load_model,btn_save_model,btn_apply_model]
     def disable_buttons():
@@ -347,4 +304,5 @@ def app():
 
 
 if __name__ == "__main__":
+    # setuptools.setup()
     app()
